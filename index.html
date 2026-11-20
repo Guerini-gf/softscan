@@ -38,12 +38,21 @@ button.chip.on{background:var(--acc);color:#1b1b1b;font-weight:700}
 .card img{display:block;width:100%;aspect-ratio:3/4;object-fit:contain;background:#0b1428}
 .card .cr{display:flex;align-items:center;gap:4px;padding:6px}
 .card .cr .n{flex:1;font-weight:700;padding-left:4px}
-.card .cr button{min-height:34px;padding:4px 10px;font-size:14px;border-radius:10px}
+.card .cr{gap:3px}
+.card .cr button{min-height:34px;min-width:30px;padding:4px 6px;font-size:14px;border-radius:10px}
 #empty{padding:40px 24px;text-align:center;color:var(--mut)}
 #cropWrap{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:4px}
 #cropCanvas{touch-action:none;border-radius:6px;background:#000}
 #resWrap{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:8px;overflow:auto}
 #resCanvas{max-width:100%;max-height:100%;background:#fff;border-radius:4px;box-shadow:0 2px 14px rgba(0,0,0,.5)}
+textarea{font:inherit;background:var(--bg);color:var(--ink);border:1px solid var(--panel2);border-radius:10px;padding:11px;width:100%;resize:vertical}
+#cardForm{flex:1;min-height:0;overflow:auto;padding:4px 12px 12px;display:flex;flex-direction:column;gap:10px}
+#cardForm label{font-size:14px;color:var(--mut);display:flex;flex-direction:column;gap:4px}
+.cdrow{display:grid;grid-template-columns:64px 78px 1fr 40px;gap:6px;margin-bottom:6px}
+.cdrow input,.cdrow select{padding:9px 8px;min-width:0}
+.cdrow button{min-height:40px;padding:0}
+#cdPhoto{height:70px;object-fit:contain;background:#fff;border-radius:6px;margin:6px 12px 0;align-self:flex-start}
+#eraseTools{display:none;gap:8px;align-items:center}
 .overlay{position:fixed;inset:0;background:rgba(5,10,24,.78);display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
 .overlay.on{display:flex}
 .box{background:var(--panel);border-radius:18px;padding:18px;width:100%;max-width:420px;display:flex;flex-direction:column;gap:12px}
@@ -104,11 +113,38 @@ input[type=text],input[type=password],select{font:inherit;background:var(--bg);c
     <button class="chip" data-f="bw">Grigio pulito</button>
     <button class="chip" data-f="thr">Bianco/Nero</button>
   </div>
+  <div class="row" id="eraseRow">
+    <button class="chip" id="btnErase">&#9003; Gomma</button>
+    <span id="eraseTools">
+      <button class="chip" data-s="s">Fine</button>
+      <button class="chip on" data-s="m">Media</button>
+      <button class="chip" data-s="l">Larga</button>
+      <button class="chip" id="btnEraseUndo" disabled>&#8630; Annulla</button>
+    </span>
+  </div>
+  <div class="hint" id="eraseHint" style="display:none">Passa il dito sulla scritta o sulla macchia da togliere.</div>
   <div id="resWrap"><canvas id="resCanvas"></canvas></div>
   <div class="bar">
     <button id="btnResBack">&#9666; Ritaglio</button>
     <button class="pri fl" id="btnSave">Salva</button>
     <button class="fl" id="btnSaveMore">Salva e scatta altra</button>
+  </div>
+</section>
+
+<!-- SCHEDA RICETTA -->
+<section class="view" id="viewCard">
+  <img id="cdPhoto" alt="Foto della ricetta">
+  <div id="cardForm">
+    <label>Titolo<input type="text" id="cdTitle" placeholder="Es. Frolla" autocomplete="off"></label>
+    <div class="mut">Ingredienti: scrivi il numero e il programma mette l unitÃ  (2000 diventa 2 Kg, 600 diventa 600 Gr.). Sulla tastiera puoi dettare con il microfono.</div>
+    <div id="cdRows"></div>
+    <button class="sm" id="cdAddRow">+ Ingrediente</button>
+    <label>Procedimento<textarea id="cdProc" rows="4"></textarea></label>
+    <label>Note<textarea id="cdNote" rows="2"></textarea></label>
+  </div>
+  <div class="bar">
+    <button class="fl" id="cdCancel">Annulla</button>
+    <button class="pri fl" id="cdSave">Salva scheda</button>
   </div>
 </section>
 
@@ -196,7 +232,7 @@ function busy(on, txt){
   $('#busy').classList.toggle('on', !!on);
 }
 function showView(n){
-  for (const v of ['List', 'Crop', 'Res']) $('#view' + v).classList.toggle('on', v === n);
+  for (const v of ['List', 'Crop', 'Res', 'Card']) $('#view' + v).classList.toggle('on', v === n);
 }
 
 /* ---------- archivio sul telefono (IndexedDB) ---------- */
@@ -455,7 +491,8 @@ const DEFAULT_CORNERS = () => [[.04, .04], [.96, .04], [.96, .96], [.04, .96]];
 
 /* ---------- editor: ritaglio ---------- */
 const ed = { base: null, cur: null, rot: 0, corners: DEFAULT_CORNERS(), cw: 0, ch: 0, dpr: 1, drag: -1,
-  pageId: null, origBlob: null, filter: 'doc', warped: null, outCanvas: null, pending: null };
+  pageId: null, origBlob: null, filter: 'doc', warped: null, outCanvas: null, pending: null,
+  erase: [], eraseOn: false, eraseSize: 'm', filtered: null };
 
 function layoutCrop(){
   const wrap = $('#cropWrap');
@@ -540,9 +577,12 @@ $('#btnCropNext').onclick = async () => {
 async function renderResult(){
   busy(true, 'Pulisco la pagina...'); await sleep(40);
   const img = applyFilter(ed.warped, ed.filter);
+  ed.filtered = img;
   const c = $('#resCanvas'); c.width = img.width; c.height = img.height;
   c.getContext('2d').putImageData(img, 0, 0);
+  applyErase(c);
   ed.outCanvas = c;
+  eraseUI();
   document.querySelectorAll('#chips .chip').forEach(b => b.classList.toggle('on', b.dataset.f === ed.filter));
   busy(false);
 }
@@ -550,7 +590,57 @@ $('#chips').addEventListener('click', e => {
   const b = e.target.closest('.chip'); if (!b) return;
   ed.filter = b.dataset.f; renderResult();
 });
-$('#btnResBack').onclick = () => { showView('Crop'); requestAnimationFrame(layoutCrop); };
+$('#btnResBack').onclick = () => {
+  if (ed.erase.length){ ed.erase = []; toast('Le cancellature vanno rifatte dopo un nuovo ritaglio'); }
+  ed.eraseOn = false; showView('Crop'); requestAnimationFrame(layoutCrop);
+};
+
+/* ---------- gomma: pennello bianco con annulla ---------- */
+const ERASE_R = { s: 0.004, m: 0.010, l: 0.025 };   // raggio come frazione della larghezza della pagina
+function applyErase(c){
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.strokeStyle = '#fff'; g.lineCap = 'round'; g.lineJoin = 'round';
+  for (const s of ed.erase){
+    const r = Math.max(2, s.r * c.width);
+    if (s.pts.length === 1){ g.beginPath(); g.arc(s.pts[0][0] * c.width, s.pts[0][1] * c.height, r, 0, 7); g.fill(); continue; }
+    g.lineWidth = r * 2; g.beginPath();
+    s.pts.forEach(([x, y], i) => i ? g.lineTo(x * c.width, y * c.height) : g.moveTo(x * c.width, y * c.height));
+    g.stroke();
+  }
+}
+function eraseUI(){
+  $('#btnErase').classList.toggle('on', ed.eraseOn);
+  $('#eraseTools').style.display = ed.eraseOn ? 'flex' : 'none';
+  $('#eraseHint').style.display = ed.eraseOn ? 'block' : 'none';
+  $('#resCanvas').style.touchAction = ed.eraseOn ? 'none' : 'auto';
+  document.querySelectorAll('#eraseTools [data-s]').forEach(b => b.classList.toggle('on', b.dataset.s === ed.eraseSize));
+  $('#btnEraseUndo').disabled = !ed.erase.length;
+}
+$('#btnErase').onclick = () => { ed.eraseOn = !ed.eraseOn; eraseUI(); };
+$('#eraseTools').addEventListener('click', e => { const b = e.target.closest('[data-s]'); if (!b) return; ed.eraseSize = b.dataset.s; eraseUI(); });
+$('#btnEraseUndo').onclick = () => {
+  if (!ed.erase.length || !ed.filtered) return;
+  ed.erase.pop(); const c = $('#resCanvas'); c.getContext('2d').putImageData(ed.filtered, 0, 0); applyErase(c); eraseUI();
+};
+(function bindErase(){
+  const c = $('#resCanvas'); let cur = null;
+  const pt = e => { const r = c.getBoundingClientRect(); return [clamp((e.clientX - r.left) / r.width, 0, 1), clamp((e.clientY - r.top) / r.height, 0, 1)]; };
+  const rad = s => Math.max(2, s.r * c.width);
+  c.addEventListener('pointerdown', e => {
+    if (!ed.eraseOn) return;
+    cur = { r: ERASE_R[ed.eraseSize], pts: [pt(e)] }; ed.erase.push(cur);
+    c.setPointerCapture(e.pointerId); e.preventDefault();
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.beginPath(); g.arc(cur.pts[0][0] * c.width, cur.pts[0][1] * c.height, rad(cur), 0, 7); g.fill();
+  });
+  c.addEventListener('pointermove', e => {
+    if (!cur) return;
+    cur.pts.push(pt(e)); e.preventDefault();
+    const g = c.getContext('2d'), n = cur.pts.length;
+    g.strokeStyle = '#fff'; g.lineCap = 'round'; g.lineWidth = rad(cur) * 2; g.beginPath();
+    g.moveTo(cur.pts[n - 2][0] * c.width, cur.pts[n - 2][1] * c.height); g.lineTo(cur.pts[n - 1][0] * c.width, cur.pts[n - 1][1] * c.height); g.stroke();
+  });
+  const end = () => { if (cur){ cur = null; eraseUI(); } };
+  c.addEventListener('pointerup', end); c.addEventListener('pointercancel', end);
+})();
 
 async function savePage(){
   busy(true, 'Salvo la pagina...');
@@ -563,11 +653,12 @@ async function savePage(){
     const thumb = tc.toDataURL('image/jpeg', 0.7);
     let page = ed.pageId ? state.pages.find(p => p.id === ed.pageId) : null;
     const orig = page ? page.orig : (ed.origBlob || await toBlob(ed.base, 'image/jpeg', 0.92));
-    const data = { orig, rot: ed.rot, corners: ed.corners.map(p => p.slice()), filter: ed.filter, out, thumb, w: c.width, h: c.height };
+    const data = { orig, rot: ed.rot, corners: ed.corners.map(p => p.slice()), filter: ed.filter, erase: ed.erase.map(s => ({ r: s.r, pts: s.pts })), kind: 'scan', out, thumb, w: c.width, h: c.height };
     if (page) Object.assign(page, data);
     else { page = Object.assign({ id: uid(), order: state.pages.length }, data); state.pages.push(page); }
     await safe(() => DB.put(page));
   } finally { busy(false); }
+  ed.eraseOn = false;
   showList();
 }
 $('#btnSave').onclick = async () => { await savePage(); advanceQueue(); };
@@ -588,13 +679,16 @@ function renderList(){
   $('#btnPdf').disabled = !n;
   state.pages.forEach((p, i) => {
     const d = document.createElement('div'); d.className = 'card';
-    d.innerHTML = '<img alt="Pagina ' + (i + 1) + '" src="' + p.thumb + '"><div class="cr"><span class="n">' + (i + 1) +
-      '</span><button data-a="l" aria-label="Sposta prima">&#9664;</button><button data-a="r" aria-label="Sposta dopo">&#9654;</button><button data-a="d" aria-label="Elimina">&#10005;</button></div>';
+    d.innerHTML = '<img alt="Pagina ' + (i + 1) + '" src="' + p.thumb + '"><div class="cr"><span class="n">' + (p.kind === 'scheda' ? '&#128221; ' : '') + (i + 1) +
+      '</span><button data-a="l" aria-label="Sposta prima">&#9664;</button><button data-a="r" aria-label="Sposta dopo">&#9654;</button>' +
+      (p.kind === 'scheda' ? '' : '<button data-a="s" aria-label="Scheda ricetta">&#128221;</button>') +
+      '<button data-a="d" aria-label="Elimina">&#10005;</button></div>';
     d.querySelector('img').onclick = () => editPage(p.id);
     d.querySelector('.cr').onclick = e => {
       const b = e.target.closest('button'); if (!b) return;
       const a = b.dataset.a;
       if (a === 'd'){ if (confirm('Eliminare la pagina ' + (i + 1) + '?')) removePage(p.id); }
+      else if (a === 's') openCardNew(p);
       else movePage(i, a === 'l' ? -1 : 1);
     };
     g.appendChild(d);
@@ -616,13 +710,160 @@ async function movePage(i, dir){
 }
 async function editPage(id){
   const p = state.pages.find(x => x.id === id); if (!p) return;
+  if (p.kind === 'scheda'){ openCardEdit(p); return; }
   busy(true, 'Apro la pagina...');
   try {
     ed.base = await loadImage(p.orig); ed.origBlob = p.orig;
     ed.rot = p.rot; ed.corners = p.corners.map(q => q.slice()); ed.filter = p.filter; ed.pageId = p.id;
+    ed.erase = (p.erase || []).map(s => ({ r: s.r, pts: s.pts })); ed.eraseOn = false;
   } catch (e){ busy(false); toast('Non riesco ad aprire la pagina'); return; }
   busy(false); openCrop();
 }
+
+/* ---------- scheda ricetta a celle ---------- */
+const cd = { id: null, srcId: null, foto: null, titolo: '', righe: [], proc: '', note: '', url: null };
+const UNITA = ['', 'Gr.', 'Kg', 'Lt', 'Ml', 'Pz', 'q.b.'];
+const fmtNum = n => String(Math.round(n * 100) / 100).replace('.', ',');
+function normQty(q, u){   // regola di Gianfelice: numeri da 1000 in su senza unita = grammi -> Kg
+  const t = String(q).trim().replace(',', '.');
+  if (!/^\d+(\.\d+)?$/.test(t)) return [q, u];
+  const n = parseFloat(t);
+  if (!u){ if (n >= 1000) return [fmtNum(n / 1000), 'Kg']; if (n >= 100) return [fmtNum(n), 'Gr.']; return [q, u]; }
+  if (u === 'Gr.' && n >= 1000) return [fmtNum(n / 1000), 'Kg'];
+  if (u === 'Kg' && n >= 100) return [fmtNum(n / 1000), 'Kg'];
+  return [q, u];
+}
+function cdRender(){
+  const box = $('#cdRows'); box.innerHTML = '';
+  cd.righe.forEach((r, i) => {
+    const d = document.createElement('div'); d.className = 'cdrow';
+    const q = document.createElement('input'); q.type = 'text'; q.inputMode = 'decimal'; q.placeholder = 'QtÃ '; q.value = r.q;
+    const u = document.createElement('select');
+    UNITA.forEach(x => { const o = document.createElement('option'); o.value = x; o.textContent = x || 'â€”'; u.appendChild(o); });
+    u.value = r.u;
+    const n = document.createElement('input'); n.type = 'text'; n.placeholder = 'Ingrediente'; n.value = r.i;
+    const x = document.createElement('button'); x.className = 'sm'; x.textContent = 'âœ•'; x.setAttribute('aria-label', 'Togli riga');
+    const norm = () => { const [nq, nu] = normQty(q.value, u.value); r.q = nq; r.u = nu; q.value = nq; u.value = nu; };
+    q.oninput = () => { r.q = q.value; }; q.onchange = norm; u.onchange = norm; n.oninput = () => { r.i = n.value; };
+    x.onclick = () => { cd.righe.splice(i, 1); if (!cd.righe.length) cd.righe.push({ q: '', u: '', i: '' }); cdRender(); };
+    d.append(q, u, n, x); box.appendChild(d);
+  });
+}
+function cdShow(){
+  $('#cdTitle').value = cd.titolo; $('#cdProc').value = cd.proc; $('#cdNote').value = cd.note;
+  if (cd.url) URL.revokeObjectURL(cd.url);
+  cd.url = URL.createObjectURL(cd.foto); $('#cdPhoto').src = cd.url;
+  cdRender(); showView('Card');
+}
+function openCardNew(p){
+  Object.assign(cd, { id: null, srcId: p.id, foto: p.out, titolo: '', proc: '', note: '' });
+  cd.righe = Array.from({ length: 6 }, () => ({ q: '', u: '', i: '' })); cdShow();
+}
+function openCardEdit(p){
+  const s = p.scheda;
+  Object.assign(cd, { id: p.id, srcId: p.id, foto: s.foto, titolo: s.titolo, proc: s.proc, note: s.note });
+  cd.righe = s.righe.map(r => ({ q: r.q, u: r.u, i: r.i })); if (!cd.righe.length) cd.righe.push({ q: '', u: '', i: '' }); cdShow();
+}
+$('#cdTitle').oninput = e => { cd.titolo = e.target.value; };
+$('#cdProc').oninput = e => { cd.proc = e.target.value; };
+$('#cdNote').oninput = e => { cd.note = e.target.value; };
+$('#cdAddRow').onclick = () => {
+  cd.righe.push({ q: '', u: '', i: '' }); cdRender();
+  const last = $('#cdRows').lastElementChild; if (last) last.querySelector('input').focus();
+};
+$('#cdCancel').onclick = showList;
+
+function rrect(g, x, y, w, h, r){
+  g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+async function renderCardCanvas(d){
+  const W = 1240, H = 1754, M = 60, IW = W - 2 * M;   // A4 a 150 dpi
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
+  const F = '"Helvetica Neue", Arial, sans-serif';
+  const rows = d.righe.filter(r => r.q || r.i || r.u);
+  const wrap = (txt, px, maxW) => {
+    g.font = px + 'px ' + F; const out = [];
+    for (const par of String(txt || '').split('\n')){
+      let line = '';
+      for (const word of par.split(/\s+/).filter(Boolean)){
+        const t = line ? line + ' ' + word : word;
+        if (g.measureText(t).width > maxW && line){ out.push(line); line = word; } else line = t;
+      }
+      out.push(line);
+    }
+    while (out.length && !out[out.length - 1]) out.pop();
+    return out;
+  };
+  let L = null;
+  for (let s = 1; s >= 0.55; s -= 0.05){   // se c'e molto testo rimpicciolisco e riduco la foto
+    const fs = Math.round(32 * s), rh = Math.round(56 * s), th = Math.round(100 * s), lh = Math.round(fs * 1.35);
+    const pl = wrap(d.proc, fs, IW - 60), nl = wrap(d.note, fs, IW - 60);
+    const cardH = 24 + (d.titolo ? th : 0) + (rows.length ? rows.length * rh + 14 : 0) +
+      (pl.length ? lh + 14 + pl.length * lh + 18 : 0) + (nl.length ? lh + 14 + nl.length * lh + 18 : 0) + 12;
+    L = { fs, rh, th, lh, pl, nl, cardH, photoMax: H - 2 * M - cardH - 36 };
+    if (L.photoMax >= 420) break;
+  }
+  const photoH = Math.max(240, Math.min(L.photoMax, 980));
+  const bmp = await createImageBitmap(d.foto);
+  const sc = Math.min(IW / bmp.width, photoH / bmp.height), pw = bmp.width * sc, ph = bmp.height * sc, px = (W - pw) / 2;
+  g.drawImage(bmp, px, M, pw, ph);
+  g.strokeStyle = '#c9d2e6'; g.lineWidth = 2; g.strokeRect(px, M, pw, ph);
+  const y0 = M + ph + 36;
+  g.strokeStyle = '#1d2c5a'; g.lineWidth = 4; rrect(g, M, y0, IW, L.cardH, 18); g.stroke();
+  let y = y0 + 14; g.textBaseline = 'middle';
+  if (d.titolo){
+    g.font = 'bold ' + Math.round(48 * L.th / 100) + 'px ' + F; g.textAlign = 'center'; g.fillStyle = '#10204a';
+    g.fillText(d.titolo, W / 2, y + L.th / 2 - 4, IW - 40); y += L.th;
+  }
+  if (rows.length){
+    const colW = Math.round(IW * 0.26), top = y;
+    g.strokeStyle = '#8c9bc0'; g.lineWidth = 2; g.textAlign = 'left';
+    g.beginPath(); g.moveTo(M, y); g.lineTo(M + IW, y); g.stroke();
+    rows.forEach(r => {
+      g.fillStyle = '#10204a'; g.font = 'bold ' + L.fs + 'px ' + F;
+      g.fillText(((r.q || '') + ' ' + (r.u || '')).trim(), M + 22, y + L.rh / 2, colW - 40);
+      g.font = L.fs + 'px ' + F; g.fillText(r.i || '', M + colW + 22, y + L.rh / 2, IW - colW - 44);
+      y += L.rh; g.beginPath(); g.moveTo(M, y); g.lineTo(M + IW, y); g.stroke();
+    });
+    g.beginPath(); g.moveTo(M + colW, top); g.lineTo(M + colW, y); g.stroke();
+    y += 14;
+  }
+  const blocco = (titolo, lines) => {
+    if (!lines.length) return;
+    g.textAlign = 'left'; g.font = 'bold ' + L.fs + 'px ' + F; g.fillStyle = '#1d2c5a';
+    g.fillText(titolo, M + 22, y + L.lh / 2); y += L.lh + 14;
+    g.font = L.fs + 'px ' + F; g.fillStyle = '#10204a';
+    lines.forEach(t => { g.fillText(t, M + 22, y + L.lh / 2); y += L.lh; });
+    y += 18;
+  };
+  blocco('Procedimento', L.pl); blocco('Note', L.nl);
+  return c;
+}
+$('#cdSave').onclick = async () => {
+  cd.righe = cd.righe.map(r => { const [q, u] = normQty(r.q, r.u); return { q, u, i: r.i }; });
+  busy(true, 'Preparo la scheda...'); await sleep(30);
+  try {
+    const c = await renderCardCanvas(cd);
+    const out = await toBlob(c, 'image/jpeg', 0.9);
+    const tc = document.createElement('canvas'); tc.width = 320; tc.height = Math.round(320 * c.height / c.width);
+    tc.getContext('2d').drawImage(c, 0, 0, tc.width, tc.height);
+    const data = { kind: 'scheda', out, thumb: tc.toDataURL('image/jpeg', 0.7), w: c.width, h: c.height,
+      scheda: { titolo: cd.titolo, righe: cd.righe, proc: cd.proc, note: cd.note, foto: cd.foto } };
+    let page = cd.id ? state.pages.find(p => p.id === cd.id) : null, from = 0;
+    if (page){ Object.assign(page, data); from = state.pages.indexOf(page); }
+    else {
+      page = Object.assign({ id: uid(), order: 0, orig: null, rot: 0, corners: null, filter: 'doc', erase: [] }, data);
+      const i = state.pages.findIndex(p => p.id === cd.srcId);
+      from = i < 0 ? state.pages.length : i + 1; state.pages.splice(from, 0, page);
+    }
+    state.pages.forEach((p, k) => p.order = k);
+    for (let k = from; k < state.pages.length; k++) await safe(() => DB.put(state.pages[k]));
+  } catch (e){ toast('Scheda non riuscita: ' + e.message); }
+  finally { busy(false); }
+  showList();
+};
 
 /* ---------- ingresso foto ---------- */
 function updateQueueInfo(){ $('#queueInfo').textContent = state.queue.length ? 'altre ' + state.queue.length : ''; }
@@ -631,7 +872,7 @@ async function startNext(){
   const file = state.queue.shift(); updateQueueInfo();
   busy(true, 'Carico la foto...');
   try {
-    ed.base = await loadImage(file); ed.origBlob = null; ed.rot = 0; ed.pageId = null; ed.filter = 'doc';
+    ed.base = await loadImage(file); ed.origBlob = null; ed.rot = 0; ed.pageId = null; ed.filter = 'doc'; ed.erase = []; ed.eraseOn = false;
     ed.corners = DEFAULT_CORNERS();
     const q = autoCorners(ed.base); if (q) ed.corners = q;
   } catch (e){ busy(false); toast('Foto non leggibile'); showList(); return; }
