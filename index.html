@@ -814,13 +814,22 @@ async function editPage(id){
 const cd = { id: null, srcId: null, foto: null, titolo: '', righe: [], proc: '', note: '', url: null, conFoto: false };
 const UNITA = ['', 'Gr.', 'Kg', 'Lt', 'Ml', 'Pz', 'q.b.'];
 const fmtNum = n => String(Math.round(n * 100) / 100).replace('.', ',');
-function normQty(q, u){   // regola di Gianfelice: numeri da 1000 in su senza unita = grammi -> Kg
-  const t = String(q).trim().replace(',', '.');
+function normQty(q, u, ing){   // regola di Gianfelice: numeri da 1000 in su senza unita = grammi -> Kg
+  let s = String(q).trim(), flag = '';
+  const mm = s.match(/^(.*?)\s*\[\?\]\s*$/);
+  if (mm){ s = mm[1].trim(); flag = ' [?]'; }
+  let t = s.replace(',', '.');
+  if (/^\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '');   // 3.500 all'italiana = 3500
   if (!/^\d+(\.\d+)?$/.test(t)) return [q, u];
-  const n = parseFloat(t);
-  if (!u){ if (n >= 1000) return [fmtNum(n / 1000), 'Kg']; if (n >= 100) return [fmtNum(n), 'Gr.']; return [q, u]; }
-  if (u === 'Gr.' && n >= 1000) return [fmtNum(n / 1000), 'Kg'];
-  if (u === 'Kg' && n >= 100) return [fmtNum(n / 1000), 'Kg'];
+  const n = parseFloat(t), out = (a, b) => [a + flag, b];
+  if (!u){
+    if (n >= 1000) return out(fmtNum(n / 1000), 'Kg');
+    if (n >= 100) return out(fmtNum(n), 'Gr.');
+    if (/\b(latte|panna|acqua|olio|vino|brodo|succo)\b/i.test(ing || '')) return out(fmtNum(n), 'Lt');   // liquidi: litri
+    return [q, u];
+  }
+  if (u === 'Gr.' && n >= 1000) return out(fmtNum(n / 1000), 'Kg');
+  if (u === 'Kg' && n >= 100) return out(fmtNum(n / 1000), 'Kg');
   return [q, u];
 }
 function cdRender(){
@@ -833,7 +842,7 @@ function cdRender(){
     u.value = r.u;
     const n = document.createElement('input'); n.type = 'text'; n.placeholder = 'Ingrediente'; n.value = r.i;
     const x = document.createElement('button'); x.className = 'sm'; x.textContent = '✕'; x.setAttribute('aria-label', 'Togli riga');
-    const norm = () => { const [nq, nu] = normQty(q.value, u.value); r.q = nq; r.u = nu; q.value = nq; u.value = nu; };
+    const norm = () => { const [nq, nu] = normQty(q.value, u.value, n.value); r.q = nq; r.u = nu; q.value = nq; u.value = nu; };
     q.oninput = () => { r.q = q.value; }; q.onchange = norm; u.onchange = norm; n.oninput = () => { r.i = n.value; };
     x.onclick = () => { cd.righe.splice(i, 1); if (!cd.righe.length) cd.righe.push({ q: '', u: '', i: '' }); cdRender(); };
     d.append(q, u, n, x); box.appendChild(d);
@@ -917,7 +926,8 @@ async function renderCardCanvas(d){
     g.beginPath(); g.moveTo(M, y); g.lineTo(M + IW, y); g.stroke();
     rows.forEach(r => {
       g.fillStyle = '#10204a'; g.font = 'bold ' + L.fs + 'px ' + F;
-      g.fillText(((r.q || '') + ' ' + (r.u || '')).trim(), M + 22, y + L.rh / 2, colW - 40);
+      const qq = String(r.q || ''), dub = /\[\?\]/.test(qq) ? ' [?]' : '';
+      g.fillText((qq.replace(/\s*\[\?\]\s*/, '') + ' ' + (r.u || '')).trim() + dub, M + 22, y + L.rh / 2, colW - 40);
       g.font = L.fs + 'px ' + F; g.fillText(r.i || '', M + colW + 22, y + L.rh / 2, IW - colW - 44);
       y += L.rh; g.beginPath(); g.moveTo(M, y); g.lineTo(M + IW, y); g.stroke();
     });
@@ -936,7 +946,7 @@ async function renderCardCanvas(d){
   return c;
 }
 $('#cdSave').onclick = async () => {
-  cd.righe = cd.righe.map(r => { const [q, u] = normQty(r.q, r.u); return { q, u, i: r.i }; });
+  cd.righe = cd.righe.map(r => { const [q, u] = normQty(r.q, r.u, r.i); return { q, u, i: r.i }; });
   busy(true, 'Preparo la scheda...'); await sleep(30);
   try {
     const c = await renderCardCanvas(cd);
@@ -983,7 +993,7 @@ $('#keyOk').onclick = () => {
   setKey(v, $('#keyKeep').checked); $('#keyInput').value = ''; $('#ovKey').classList.remove('on'); toast('Chiave salvata');
   if (pendingIA){ const f = pendingIA; pendingIA = null; f(); }
 };
-const PROMPT_IA = `Sei un assistente che trascrive ricette scritte a mano in italiano. Guarda la foto e rispondi SOLO con un oggetto JSON, senza testo prima o dopo e senza apici inversi, con questa forma esatta: {"titolo": "", "righe": [{"q": "", "u": "", "i": ""}], "procedimento": "", "note": ""}. Regole: "q" è la quantità copiata ESATTAMENTE come è scritta (2000 resta "2000", non convertire); "u" è l'unità solo se è scritta (gr, kg, lt, ml, pz, q.b.), altrimenti stringa vuota; "i" è l'ingrediente con le specifiche scritte accanto (per esempio "margarina foglio oro"); una riga per ingrediente, nell'ordine della pagina; se una parola non è leggibile con certezza scrivila come meglio puoi e aggiungi [?] subito dopo; se mancano procedimento o note lascia stringa vuota; non inventare nulla, ma correggi gli errori di ortografia evidenti senza cambiare quantit\u00e0, numeri o ingredienti. Se nella foto non c'è una ricetta restituisci titolo vuoto e righe vuote.`;
+const PROMPT_IA = `Sei un assistente che trascrive ricette scritte a mano in italiano. Guarda la foto e rispondi SOLO con un oggetto JSON, senza testo prima o dopo e senza apici inversi, con questa forma esatta: {"titolo": "", "righe": [{"q": "", "u": "", "i": ""}], "procedimento": "", "note": ""}. Regole: "q" è la quantità copiata ESATTAMENTE come è scritta (2000 resta "2000", non convertire; scrivi i numeri senza separatore delle migliaia, 3.500 diventa 3500; se la quantit\u00e0 \u00e8 incerta aggiungi [?] dopo il numero); "u" è l'unità solo se è scritta (gr, kg, lt, ml, pz, q.b.), altrimenti stringa vuota; "i" è l'ingrediente con le specifiche scritte accanto (per esempio "margarina foglio oro"); una riga per ingrediente, nell'ordine della pagina; se una parola non è leggibile con certezza scrivila come meglio puoi e aggiungi [?] subito dopo; se mancano procedimento o note lascia stringa vuota; non inventare nulla, ma correggi gli errori di ortografia evidenti senza cambiare quantit\u00e0, numeri o ingredienti. Se nella foto non c'è una ricetta restituisci titolo vuoto e righe vuote.`;
 async function fotoPerIA(blob){
   const bmp = await createImageBitmap(blob), sc = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
   const c = document.createElement('canvas'); c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
@@ -1040,7 +1050,7 @@ async function leggiConIA(){
     const dati = JSON.parse(txt.slice(a, z + 1));
     cd.titolo = String(dati.titolo || ''); cd.proc = String(dati.procedimento || ''); cd.note = String(dati.note || '');
     cd.righe = (Array.isArray(dati.righe) ? dati.righe : []).map(x => {
-      const [q2, u2] = normQty(String((x && x.q) || ''), unitaDa(x && x.u)); return { q: q2, u: u2, i: String((x && x.i) || '') };
+      const [q2, u2] = normQty(String((x && x.q) || ''), unitaDa(x && x.u), String((x && x.i) || '')); return { q: q2, u: u2, i: String((x && x.i) || '') };
     });
     if (!cd.righe.length) cd.righe.push({ q: '', u: '', i: '' });
     cdFill();
