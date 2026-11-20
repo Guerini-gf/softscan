@@ -447,7 +447,9 @@ function autoCorners(src){
   const ris = [valuta(closeMask(mA, 2)), valuta(closeMask(mB2, 3))].filter(Boolean);
   if (!ris.length) return null;
   ris.sort((a, b) => b.score - a.score);
-  return ris[0].q;
+  // stringo un filo verso il centro (1,5%) per non includere il bordo del tavolo
+  const q = ris[0].q, cx = (q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4, cy = (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4;
+  return q.map(([x, y]) => [cx + (x - cx) * 0.985, cy + (y - cy) * 0.985]);
 }
 const DEFAULT_CORNERS = () => [[.04, .04], [.96, .04], [.96, .96], [.04, .96]];
 
