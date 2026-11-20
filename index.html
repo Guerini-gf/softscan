@@ -53,6 +53,8 @@ textarea{font:inherit;background:var(--bg);color:var(--ink);border:1px solid var
 .cdrow button{min-height:40px;padding:0}
 #cdPhoto{height:70px;object-fit:contain;background:#fff;border-radius:6px;margin:6px 12px 0;align-self:flex-start}
 #eraseTools{display:none;gap:8px;align-items:center}
+#docForm{flex:1;min-height:0;overflow:auto;padding:4px 12px 12px;display:flex;flex-direction:column;gap:10px}
+#dcPhoto{height:70px;object-fit:contain;background:#fff;border-radius:6px;margin:6px 12px 0;align-self:flex-start}
 .overlay{position:fixed;inset:0;background:rgba(5,10,24,.78);display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
 .overlay.on{display:flex}
 .box{background:var(--panel);border-radius:18px;padding:18px;width:100%;max-width:420px;display:flex;flex-direction:column;gap:12px}
@@ -124,7 +126,8 @@ input[type=text],input[type=password],select{font:inherit;background:var(--bg);c
   </div>
   <div class="hint" id="eraseHint" style="display:none">Passa il dito sulla scritta o sulla macchia da togliere.</div>
   <div id="resWrap"><canvas id="resCanvas"></canvas></div>
-  <div class="row"><button class="pri fl" id="btnRicetta">&#128221; Crea scheda ricetta (legge da sola)</button></div>
+  <div class="row"><button class="pri fl" id="btnRicetta">&#128221; Ricetta a celle</button><button class="pri fl" id="btnDocumento">&#128196; Documento in pulito</button></div>
+  <div class="hint">Legge la foto da solo e la rif&agrave; in pulito, senza la foto. Controlla sempre il risultato.</div>
   <div class="bar">
     <button id="btnResBack">&#9666; Ritaglio</button>
     <button class="pri fl" id="btnSave">Salva</button>
@@ -137,6 +140,7 @@ input[type=text],input[type=password],select{font:inherit;background:var(--bg);c
   <img id="cdPhoto" alt="Foto della ricetta">
   <div class="row"><button class="sm pri" id="cdIA">&#10024; Leggi con IA</button><span class="mut">oppure scrivi tu le celle</span></div>
   <div id="cardForm">
+    <label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="cdFotoOn" style="width:auto"> Metti anche la foto in cima alla pagina</label>
     <label>Titolo<input type="text" id="cdTitle" placeholder="Es. Frolla" autocomplete="off"></label>
     <div class="mut">Ingredienti: scrivi il numero e il programma mette l’unità (2000 diventa 2 Kg, 600 diventa 600 Gr.). Sulla tastiera puoi dettare con il microfono.</div>
     <div id="cdRows"></div>
@@ -147,6 +151,21 @@ input[type=text],input[type=password],select{font:inherit;background:var(--bg);c
   <div class="bar">
     <button class="fl" id="cdCancel">Annulla</button>
     <button class="pri fl" id="cdSave">Salva scheda</button>
+  </div>
+</section>
+
+<!-- DOCUMENTO IN PULITO -->
+<section class="view" id="viewDoc">
+  <img id="dcPhoto" alt="Foto del documento">
+  <div class="row"><button class="sm pri" id="dcIA">&#10024; Leggi con IA</button><span class="mut">oppure scrivi o correggi tu</span></div>
+  <div id="docForm">
+    <label style="flex-direction:row;align-items:center;gap:8px;font-size:14px;color:var(--mut)"><input type="checkbox" id="dcFotoOn" style="width:auto"> Metti anche la foto in cima alla prima pagina</label>
+    <div class="mut">Formato: # titolo, ## sezione, - elenco, celle separate da | per le tabelle, riga vuota tra i paragrafi. [?] segna una parola incerta.</div>
+    <textarea id="dcText" rows="16" spellcheck="false" style="font-family:ui-monospace,Menlo,monospace;font-size:14px"></textarea>
+  </div>
+  <div class="bar">
+    <button class="fl" id="dcCancel">Annulla</button>
+    <button class="pri fl" id="dcSave">Salva documento</button>
   </div>
 </section>
 
@@ -252,7 +271,7 @@ function busy(on, txt){
   $('#busy').classList.toggle('on', !!on);
 }
 function showView(n){
-  for (const v of ['List', 'Crop', 'Res', 'Card']) $('#view' + v).classList.toggle('on', v === n);
+  for (const v of ['List', 'Crop', 'Res', 'Card', 'Doc']) $('#view' + v).classList.toggle('on', v === n);
 }
 
 /* ---------- archivio sul telefono (IndexedDB) ---------- */
@@ -714,11 +733,21 @@ async function savePage(opts){
   return saved;
 }
 $('#btnSave').onclick = async () => { await savePage(); advanceQueue(); };
+async function fotoDelRisultato(){
+  busy(true, 'Preparo la pagina...');
+  try { return await toBlob(ed.outCanvas, 'image/jpeg', 0.9); } finally { busy(false); }
+}
 $('#btnRicetta').onclick = async () => {
-  const p = await savePage({ noList: true });
-  if (!p) return;
-  openCardNew(p);
-  setTimeout(() => leggiConIA(), 250);   // legge la foto da sola; se manca la chiave la chiede
+  const out = await fotoDelRisultato(); if (!out) return;
+  ed.eraseOn = false;
+  openCardNew({ id: null, out });                  // la scansione non si salva a parte: resta solo la pagina costruita
+  setTimeout(() => leggiConIA(), 250);             // legge la foto da sola; se manca la chiave la chiede
+};
+$('#btnDocumento').onclick = async () => {
+  const out = await fotoDelRisultato(); if (!out) return;
+  ed.eraseOn = false;
+  openDocNew({ out });
+  setTimeout(() => leggiDoc(), 250);
 };
 $('#btnSaveMore').onclick = () => {
   if (state.queue.length){ savePage().then(advanceQueue); return; }
@@ -737,9 +766,9 @@ function renderList(){
   $('#btnPdf').disabled = !n;
   state.pages.forEach((p, i) => {
     const d = document.createElement('div'); d.className = 'card'; if (p.rotto) d.style.opacity = '.55';
-    d.innerHTML = '<img alt="Pagina ' + (i + 1) + '" src="' + p.thumb + '"><div class="cr"><span class="n">' + (p.rotto ? '&#9888; ' : '') + (p.kind === 'scheda' ? '&#128221; ' : '') + (i + 1) +
+    d.innerHTML = '<img alt="Pagina ' + (i + 1) + '" src="' + p.thumb + '"><div class="cr"><span class="n">' + (p.rotto ? '&#9888; ' : '') + (p.kind === 'scheda' ? '&#128221; ' : p.kind === 'documento' ? '&#128196; ' : '') + (i + 1) +
       '</span><button data-a="l" aria-label="Sposta prima">&#9664;</button><button data-a="r" aria-label="Sposta dopo">&#9654;</button>' +
-      (p.kind === 'scheda' ? '' : '<button data-a="s" aria-label="Scheda ricetta">&#128221;</button>') +
+      (p.kind === 'scheda' || p.kind === 'documento' ? '' : '<button data-a="s" aria-label="Scheda ricetta">&#128221;</button>') +
       '<button data-a="d" aria-label="Elimina">&#10005;</button></div>';
     d.querySelector('img').onclick = () => editPage(p.id);
     d.querySelector('.cr').onclick = e => {
@@ -769,6 +798,7 @@ async function movePage(i, dir){
 async function editPage(id){
   const p = state.pages.find(x => x.id === id); if (!p) return;
   if (p.kind === 'scheda'){ openCardEdit(p); return; }
+  if (p.kind === 'documento'){ openDocEdit(p); return; }
   busy(true, 'Apro la pagina...');
   try {
     ed.base = await loadImage(p.orig); ed.origBlob = p.orig;
@@ -779,7 +809,7 @@ async function editPage(id){
 }
 
 /* ---------- scheda ricetta a celle ---------- */
-const cd = { id: null, srcId: null, foto: null, titolo: '', righe: [], proc: '', note: '', url: null };
+const cd = { id: null, srcId: null, foto: null, titolo: '', righe: [], proc: '', note: '', url: null, conFoto: false };
 const UNITA = ['', 'Gr.', 'Kg', 'Lt', 'Ml', 'Pz', 'q.b.'];
 const fmtNum = n => String(Math.round(n * 100) / 100).replace('.', ',');
 function normQty(q, u){   // regola di Gianfelice: numeri da 1000 in su senza unita = grammi -> Kg
@@ -808,23 +838,24 @@ function cdRender(){
   });
 }
 function cdShow(){
-  $('#cdTitle').value = cd.titolo; $('#cdProc').value = cd.proc; $('#cdNote').value = cd.note;
+  $('#cdTitle').value = cd.titolo; $('#cdProc').value = cd.proc; $('#cdNote').value = cd.note; $('#cdFotoOn').checked = !!cd.conFoto;
   if (cd.url) URL.revokeObjectURL(cd.url);
   cd.url = URL.createObjectURL(cd.foto); $('#cdPhoto').src = cd.url;
   cdRender(); showView('Card');
 }
 function openCardNew(p){
-  Object.assign(cd, { id: null, srcId: p.id, foto: p.out, titolo: '', proc: '', note: '' });
+  Object.assign(cd, { id: null, srcId: p.id, foto: p.out, titolo: '', proc: '', note: '', conFoto: false });
   cd.righe = Array.from({ length: 6 }, () => ({ q: '', u: '', i: '' })); cdShow();
 }
 function openCardEdit(p){
   const s = p.scheda;
-  Object.assign(cd, { id: p.id, srcId: p.id, foto: s.foto, titolo: s.titolo, proc: s.proc, note: s.note });
+  Object.assign(cd, { id: p.id, srcId: p.id, foto: s.foto, titolo: s.titolo, proc: s.proc, note: s.note, conFoto: !!s.conFoto });
   cd.righe = s.righe.map(r => ({ q: r.q, u: r.u, i: r.i })); if (!cd.righe.length) cd.righe.push({ q: '', u: '', i: '' }); cdShow();
 }
 $('#cdTitle').oninput = e => { cd.titolo = e.target.value; };
 $('#cdProc').oninput = e => { cd.proc = e.target.value; };
 $('#cdNote').oninput = e => { cd.note = e.target.value; };
+$('#cdFotoOn').onchange = e => { cd.conFoto = e.target.checked; };
 $('#cdAddRow').onclick = () => {
   cd.righe.push({ q: '', u: '', i: '' }); cdRender();
   const last = $('#cdRows').lastElementChild; if (last) last.querySelector('input').focus();
@@ -855,20 +886,23 @@ async function renderCardCanvas(d){
     return out;
   };
   let L = null;
-  for (let s = 1; s >= 0.55; s -= 0.05){   // se c'e molto testo rimpicciolisco e riduco la foto
+  for (let s = d.conFoto ? 1 : 1.5; s >= 0.55; s -= 0.05){   // se c'e molto testo rimpicciolisco e riduco la foto
     const fs = Math.round(32 * s), rh = Math.round(56 * s), th = Math.round(100 * s), lh = Math.round(fs * 1.35);
     const pl = wrap(d.proc, fs, IW - 60), nl = wrap(d.note, fs, IW - 60);
     const cardH = 24 + (d.titolo ? th : 0) + (rows.length ? rows.length * rh + 14 : 0) +
       (pl.length ? lh + 14 + pl.length * lh + 18 : 0) + (nl.length ? lh + 14 + nl.length * lh + 18 : 0) + 12;
     L = { fs, rh, th, lh, pl, nl, cardH, photoMax: H - 2 * M - cardH - 36 };
-    if (L.photoMax >= 420) break;
+    if (d.conFoto ? L.photoMax >= 420 : L.cardH <= H - 2 * M) break;
   }
-  const photoH = Math.max(240, Math.min(L.photoMax, 980));
-  const bmp = await createImageBitmap(d.foto);
-  const sc = Math.min(IW / bmp.width, photoH / bmp.height), pw = bmp.width * sc, ph = bmp.height * sc, px = (W - pw) / 2;
-  g.drawImage(bmp, px, M, pw, ph);
-  g.strokeStyle = '#c9d2e6'; g.lineWidth = 2; g.strokeRect(px, M, pw, ph);
-  const y0 = M + ph + 36;
+  let y0 = M;
+  if (d.conFoto){
+    const photoH = Math.max(240, Math.min(L.photoMax, 980));
+    const bmp = await createImageBitmap(d.foto);
+    const sc = Math.min(IW / bmp.width, photoH / bmp.height), pw = bmp.width * sc, ph = bmp.height * sc, px = (W - pw) / 2;
+    g.drawImage(bmp, px, M, pw, ph);
+    g.strokeStyle = '#c9d2e6'; g.lineWidth = 2; g.strokeRect(px, M, pw, ph);
+    y0 = M + ph + 36;
+  }
   g.strokeStyle = '#1d2c5a'; g.lineWidth = 4; rrect(g, M, y0, IW, L.cardH, 18); g.stroke();
   let y = y0 + 14; g.textBaseline = 'middle';
   if (d.titolo){
@@ -908,7 +942,7 @@ $('#cdSave').onclick = async () => {
     const tc = document.createElement('canvas'); tc.width = 320; tc.height = Math.round(320 * c.height / c.width);
     tc.getContext('2d').drawImage(c, 0, 0, tc.width, tc.height);
     const data = { kind: 'scheda', out, thumb: tc.toDataURL('image/jpeg', 0.7), w: c.width, h: c.height,
-      scheda: { titolo: cd.titolo, righe: cd.righe, proc: cd.proc, note: cd.note, foto: cd.foto } };
+      scheda: { titolo: cd.titolo, righe: cd.righe, proc: cd.proc, note: cd.note, foto: cd.foto, conFoto: cd.conFoto } };
     let page = cd.id ? state.pages.find(p => p.id === cd.id) : null, from = 0;
     if (page){ Object.assign(page, data); from = state.pages.indexOf(page); }
     else {
@@ -925,7 +959,7 @@ $('#cdSave').onclick = async () => {
 
 /* ---------- lettura con IA (facoltativa: la chiave la incolla Gianfelice, mai in chat) ---------- */
 const IA_MODEL = 'claude-sonnet-5-5';
-let keyMem = '', pendingIA = false;
+let keyMem = '', pendingIA = null;
 const getKey = () => { try { return keyMem || localStorage.getItem('ss_key') || ''; } catch (e){ return keyMem; } };
 function setKey(v, keep){
   keyMem = v || '';
@@ -938,14 +972,14 @@ function openKey(){
   $('#ovKey').classList.add('on');
 }
 $('#setKey').onclick = () => { $('#ovSet').classList.remove('on'); openKey(); };
-$('#keyNo').onclick = () => { pendingIA = false; $('#ovKey').classList.remove('on'); };
-$('#keyDel').onclick = () => { setKey('', false); pendingIA = false; $('#ovKey').classList.remove('on'); toast('Chiave tolta dal telefono'); };
+$('#keyNo').onclick = () => { pendingIA = null; $('#ovKey').classList.remove('on'); };
+$('#keyDel').onclick = () => { setKey('', false); pendingIA = null; $('#ovKey').classList.remove('on'); toast('Chiave tolta dal telefono'); };
 $('#keyOk').onclick = () => {
   const v = $('#keyInput').value.trim();
   if (!v){ $('#keyMsg').textContent = 'Incolla la chiave nel campo.'; return; }
   if (!/^sk-[A-Za-z0-9_\-]{20,}$/.test(v)){ $('#keyMsg').textContent = 'Non sembra una chiave Anthropic (inizia con sk-ant-).'; return; }
   setKey(v, $('#keyKeep').checked); $('#keyInput').value = ''; $('#ovKey').classList.remove('on'); toast('Chiave salvata');
-  if (pendingIA){ pendingIA = false; leggiConIA(); }
+  if (pendingIA){ const f = pendingIA; pendingIA = null; f(); }
 };
 const PROMPT_IA = `Sei un assistente che trascrive ricette scritte a mano in italiano. Guarda la foto e rispondi SOLO con un oggetto JSON, senza testo prima o dopo e senza apici inversi, con questa forma esatta: {"titolo": "", "righe": [{"q": "", "u": "", "i": ""}], "procedimento": "", "note": ""}. Regole: "q" è la quantità copiata ESATTAMENTE come è scritta (2000 resta "2000", non convertire); "u" è l'unità solo se è scritta (gr, kg, lt, ml, pz, q.b.), altrimenti stringa vuota; "i" è l'ingrediente con le specifiche scritte accanto (per esempio "margarina foglio oro"); una riga per ingrediente, nell'ordine della pagina; se una parola non è leggibile con certezza scrivila come meglio puoi e aggiungi [?] subito dopo; se mancano procedimento o note lascia stringa vuota; non inventare nulla. Se nella foto non c'è una ricetta restituisci titolo vuoto e righe vuote.`;
 async function fotoPerIA(blob){
@@ -961,36 +995,46 @@ function unitaDa(u){
   return m[t] || '';
 }
 function cdFill(){ $('#cdTitle').value = cd.titolo; $('#cdProc').value = cd.proc; $('#cdNote').value = cd.note; cdRender(); }
-async function leggiConIA(){
-  const key = getKey();
-  if (!key){ pendingIA = true; openKey(); return; }
-  const pieno = cd.righe.some(r => r.q || r.i) || cd.titolo || cd.proc || cd.note;
-  if (pieno && !confirm('Sostituire quello che hai già scritto con la lettura dell’IA?')) return;
-  let ok = false; try { ok = localStorage.getItem('ss_ia_ok') === '1'; } catch (e){}
-  if (!ok){
-    if (!confirm('La foto di questa ricetta verrà inviata ad Anthropic (servizio esterno) per essere letta. Continuare?')) return;
-    try { localStorage.setItem('ss_ia_ok', '1'); } catch (e){}
-  }
-  busy(true, 'Leggo la ricetta... può servire fino a un minuto');
-  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 70000);
+function pulisciTesto(x){ return String(x || '').replace(/^\s*```[a-z]*\s*/i, '').replace(/\s*```\s*$/, '').trim(); }
+async function chiamaIA(foto, prompt, maxTok, msg){
+  busy(true, msg || 'Leggo la foto... pu\u00f2 servire fino a un minuto');
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 90000);
   try {
-    const b64 = await fotoPerIA(cd.foto);
+    const b64 = await fotoPerIA(foto);
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST', signal: ctl.signal,
-      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: IA_MODEL, max_tokens: 2500, messages: [{ role: 'user', content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: PROMPT_IA } ] }] })
+      headers: { 'content-type': 'application/json', 'x-api-key': getKey(), 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: IA_MODEL, max_tokens: maxTok, messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: prompt } ] }] })
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok){
       throw new Error(r.status === 401 ? 'Chiave non valida o scaduta: rimettila dalle Opzioni.'
-        : r.status === 429 ? 'Troppe richieste o limite di spesa raggiunto: riprova più tardi.'
-        : r.status >= 500 ? 'Il servizio è occupato: riprova tra poco.'
+        : r.status === 429 ? 'Troppe richieste o limite di spesa raggiunto: riprova pi\u00f9 tardi.'
+        : r.status >= 500 ? 'Il servizio \u00e8 occupato: riprova tra poco.'
         : ((j.error && j.error.message) || ('Errore ' + r.status)));
     }
-    const txt = (j.content || []).filter(x => x.type === 'text').map(x => x.text).join('');
+    return (j.content || []).filter(x => x.type === 'text').map(x => x.text).join('');
+  } catch (e){
+    toast(e.name === 'AbortError' ? 'Tempo scaduto: riprova.'
+      : (e.message && !/Failed to fetch|Load failed|NetworkError/i.test(e.message) ? e.message : 'Nessuna connessione o servizio non raggiungibile.'));
+    return null;
+  } finally { clearTimeout(to); busy(false); }
+}
+async function leggiConIA(){
+  if (!getKey()){ pendingIA = leggiConIA; openKey(); return; }
+  const pieno = cd.righe.some(r => r.q || r.i) || cd.titolo || cd.proc || cd.note;
+  if (pieno && !confirm('Sostituire quello che hai gi\u00e0 scritto con la lettura dell\u2019IA?')) return;
+  let ok = false; try { ok = localStorage.getItem('ss_ia_ok') === '1'; } catch (e){}
+  if (!ok){
+    if (!confirm('La foto di questa ricetta verr\u00e0 inviata ad Anthropic (servizio esterno) per essere letta. Continuare?')) return;
+    try { localStorage.setItem('ss_ia_ok', '1'); } catch (e){}
+  }
+  const txt = await chiamaIA(cd.foto, PROMPT_IA, 2500, 'Leggo la ricetta... pu\u00f2 servire fino a un minuto');
+  if (txt === null) return;
+  try {
     const a = txt.indexOf('{'), z = txt.lastIndexOf('}');
-    if (a < 0 || z < a) throw new Error('Risposta non leggibile: riprova o scrivi a mano.');
+    if (a < 0 || z < a) throw new Error('x');
     const dati = JSON.parse(txt.slice(a, z + 1));
     cd.titolo = String(dati.titolo || ''); cd.proc = String(dati.procedimento || ''); cd.note = String(dati.note || '');
     cd.righe = (Array.isArray(dati.righe) ? dati.righe : []).map(x => {
@@ -998,13 +1042,143 @@ async function leggiConIA(){
     });
     if (!cd.righe.length) cd.righe.push({ q: '', u: '', i: '' });
     cdFill();
-    toast(cd.titolo || cd.righe.some(r => r.i) ? 'Letto: controlla bene, l’IA può sbagliare' : 'Non ho trovato una ricetta nella foto');
-  } catch (e){
-    toast(e.name === 'AbortError' ? 'Tempo scaduto: riprova.'
-      : (e.message && !/Failed to fetch|Load failed|NetworkError/i.test(e.message) ? e.message : 'Nessuna connessione o servizio non raggiungibile.'));
-  } finally { clearTimeout(to); busy(false); }
+    toast(cd.titolo || cd.righe.some(r => r.i) ? 'Letto: controlla bene, l\u2019IA pu\u00f2 sbagliare' : 'Non ho trovato una ricetta nella foto');
+  } catch (e){ toast('Risposta non leggibile: riprova o scrivi a mano.'); }
 }
 $('#cdIA').onclick = leggiConIA;
+
+/* ---------- documento in pulito: qualsiasi documento (anche legale), testo ricostruito su pagine A4 ---------- */
+const PROMPT_DOC = `Trascrivi fedelmente il testo di questa foto di un documento (nella lingua in cui \u00e8 scritto) e ricostruisci l'impaginazione semplice usando SOLO questo formato di testo: "# " all'inizio della riga per il titolo principale, "## " per i titoli di sezione, "- " per gli elenchi, celle separate da " | " per le tabelle (una riga di testo per ogni riga della tabella), una riga vuota tra un paragrafo e l'altro. Regole: copia il testo ESATTAMENTE come \u00e8 scritto, senza correggere, riassumere, tradurre o aggiungere nulla; mantieni numeri, date, importi, nomi, indirizzi, articoli di legge e punteggiatura; se una parola non \u00e8 leggibile con certezza scrivila come meglio puoi seguita da [?]; per un tratto del tutto illeggibile scrivi [illeggibile]; per le firme scrivi [firma], per timbri e loghi [timbro] o [logo]; le caselle come [ ] oppure [x]. Rispondi SOLO con il testo ricostruito, senza commenti prima o dopo e senza blocchi di codice.`;
+const dc = { gid: null, foto: null, testo: '', conFoto: false, url: null };
+function dcShow(){
+  $('#dcText').value = dc.testo; $('#dcFotoOn').checked = !!dc.conFoto;
+  if (dc.url) URL.revokeObjectURL(dc.url);
+  dc.url = URL.createObjectURL(dc.foto); $('#dcPhoto').src = dc.url;
+  showView('Doc');
+}
+function openDocNew(p){ Object.assign(dc, { gid: null, foto: p.out, testo: '', conFoto: false }); dcShow(); }
+function openDocEdit(p){
+  const first = state.pages.find(x => x.gid === p.gid && x.doc) || p;
+  Object.assign(dc, { gid: first.gid, foto: first.doc.foto, testo: first.doc.testo, conFoto: !!first.doc.conFoto }); dcShow();
+}
+$('#dcText').oninput = e => { dc.testo = e.target.value; };
+$('#dcFotoOn').onchange = e => { dc.conFoto = e.target.checked; };
+$('#dcCancel').onclick = () => { showList(); advanceQueue(); };
+async function leggiDoc(){
+  if (!getKey()){ pendingIA = leggiDoc; openKey(); return; }
+  if (dc.testo.trim() && !confirm('Sostituire il testo che hai gi\u00e0 scritto con la lettura dell\u2019IA?')) return;
+  if (!confirm('Stai per inviare la foto di questo documento ad Anthropic (servizio esterno). Se contiene dati personali o riservati, valuta se \u00e8 il caso. Continuare?')) return;
+  const txt = await chiamaIA(dc.foto, PROMPT_DOC, 4000, 'Leggo il documento... pu\u00f2 servire fino a un minuto');
+  if (txt === null) return;
+  dc.testo = pulisciTesto(txt); $('#dcText').value = dc.testo;
+  toast(dc.testo ? 'Letto: controlla bene, l\u2019IA pu\u00f2 sbagliare' : 'Non ho trovato testo nella foto');
+}
+$('#dcIA').onclick = leggiDoc;
+
+async function renderDocPages(d){
+  const W = 1240, H = 1754, M = 100, IW = W - 2 * M, F = '"Helvetica Neue", Arial, sans-serif';
+  const mg = document.createElement('canvas').getContext('2d');
+  const wrapT = (txt, font, maxW) => {
+    mg.font = font; const out = [];
+    for (const par of String(txt || '').split('\n')){
+      let line = '';
+      for (const word of par.split(/\s+/).filter(Boolean)){
+        const t2 = line ? line + ' ' + word : word;
+        if (mg.measureText(t2).width > maxW && line){ out.push(line); line = word; } else line = t2;
+      }
+      out.push(line);
+    }
+    return out;
+  };
+  const pagine = []; let c, g, y;
+  const nuova = () => {
+    const pf = g ? g.font : '30px ' + F, pa = g ? g.textAlign : 'left';   // la nuova pagina eredita carattere e allineamento
+    c = document.createElement('canvas'); c.width = W; c.height = H; g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.textBaseline = 'top'; g.fillStyle = '#111'; g.font = pf; g.textAlign = pa; y = M; pagine.push(c);
+  };
+  const serve = h => { if (y + h > H - M) nuova(); };
+  nuova();
+  if (d.conFoto && d.foto){
+    const bmp = await createImageBitmap(d.foto), sc = Math.min(IW / bmp.width, 720 / bmp.height), pw = bmp.width * sc, ph = bmp.height * sc;
+    g.drawImage(bmp, (W - pw) / 2, y, pw, ph); g.strokeStyle = '#c9d2e6'; g.lineWidth = 2; g.strokeRect((W - pw) / 2, y, pw, ph); y += ph + 40;
+  }
+  const testo = (d.testo || '').replace(/\r/g, '').split('\n');
+  const isTab = r => /\s\|\s/.test(r) || /^\s*\|/.test(r);
+  const isSep = r => /^[\s|:\-]+$/.test(r) && r.includes('-') && r.includes('|');
+  const cellsDi = r => { let p = r.trim(); if (p.startsWith('|')) p = p.slice(1); if (p.endsWith('|')) p = p.slice(0, -1); return p.split('|').map(s => s.trim()); };
+  let i = 0;
+  while (i < testo.length){
+    const r = testo[i];
+    if (!r.trim()){ y += 22; i++; continue; }
+    if (r.startsWith('# ')){
+      const f = 'bold 46px ' + F, ls = wrapT(r.slice(2), f, IW); g.font = f; g.textAlign = 'center';
+      y += 8; ls.forEach(l => { serve(62); g.fillText(l, W / 2, y); y += 62; }); y += 10; i++; continue;
+    }
+    if (r.startsWith('## ')){
+      const f = 'bold 36px ' + F, ls = wrapT(r.slice(3), f, IW); g.font = f; g.textAlign = 'left';
+      y += 10; ls.forEach(l => { serve(50); g.fillText(l, M, y); y += 50; }); y += 4; i++; continue;
+    }
+    if (/^\s*-\s+/.test(r)){
+      const f = '30px ' + F, ls = wrapT(r.replace(/^\s*-\s+/, ''), f, IW - 50); g.font = f; g.textAlign = 'left';
+      ls.forEach((l, k) => { serve(42); if (!k) g.fillText('\u2022', M + 12, y); g.fillText(l, M + 50, y); y += 42; }); i++; continue;
+    }
+    if (isTab(r)){
+      const righe = []; let intest = false;
+      while (i < testo.length && testo[i].trim() && isTab(testo[i])){
+        if (isSep(testo[i])){ intest = righe.length === 1; } else righe.push(cellsDi(testo[i]));
+        i++;
+      }
+      const n = Math.max(1, ...righe.map(x => x.length)), cw = IW / n, f = '28px ' + F, fb = 'bold 28px ' + F;
+      righe.forEach((cells, ri) => {
+        const head = intest && ri === 0, font = head ? fb : f;
+        const col = Array.from({ length: n }, (_, k) => wrapT(cells[k] || '', font, cw - 22));
+        const rh = Math.max(...col.map(x => x.length)) * 38 + 18;
+        serve(rh);
+        g.strokeStyle = '#555'; g.lineWidth = 2; g.font = font; g.textAlign = 'left';
+        col.forEach((ls, k) => {
+          g.strokeRect(M + k * cw, y, cw, rh);
+          if (head){ g.fillStyle = '#eef1f8'; g.fillRect(M + k * cw + 1, y + 1, cw - 2, rh - 2); g.fillStyle = '#111'; }
+          ls.forEach((l, q) => g.fillText(l, M + k * cw + 11, y + 9 + q * 38));
+        });
+        y += rh;
+      });
+      y += 14; continue;
+    }
+    const f = '30px ' + F, ls = wrapT(r, f, IW); g.font = f; g.textAlign = 'left';
+    ls.forEach(l => { serve(42); g.fillText(l, M, y); y += 42; }); i++;
+  }
+  return pagine;
+}
+$('#dcSave').onclick = async () => {
+  if (!dc.testo.trim()){ toast('Scrivi o leggi prima il testo'); return; }
+  busy(true, 'Preparo le pagine...'); await sleep(30);
+  try {
+    const pagine = await renderDocPages(dc);
+    const gid = dc.gid || uid();
+    const vecchie = state.pages.filter(p => p.gid === gid);
+    let from = state.pages.length;
+    if (vecchie.length){
+      from = state.pages.indexOf(vecchie[0]);
+      state.pages = state.pages.filter(p => p.gid !== gid);
+      for (const v of vecchie) await safe(() => DB.del(v.id));
+    }
+    const nuove = [];
+    for (let k = 0; k < pagine.length; k++){
+      const c = pagine[k], out = await toBlob(c, 'image/jpeg', 0.9);
+      const tc = document.createElement('canvas'); tc.width = 320; tc.height = Math.round(320 * c.height / c.width);
+      tc.getContext('2d').drawImage(c, 0, 0, tc.width, tc.height);
+      nuove.push({ id: uid(), order: 0, orig: null, rot: 0, corners: null, filter: 'doc', erase: [], kind: 'documento', gid, out,
+        thumb: tc.toDataURL('image/jpeg', 0.7), w: c.width, h: c.height, doc: k === 0 ? { testo: dc.testo, foto: dc.foto, conFoto: dc.conFoto } : null });
+    }
+    from = Math.min(from, state.pages.length);
+    state.pages.splice(from, 0, ...nuove);
+    state.pages.forEach((p, k) => p.order = k);
+    for (let k = from; k < state.pages.length; k++) await safe(() => DB.put(state.pages[k]));
+    toast(pagine.length === 1 ? 'Documento salvato (1 pagina)' : 'Documento salvato (' + pagine.length + ' pagine)');
+  } catch (e){ toast('Documento non riuscito: ' + e.message); }
+  finally { busy(false); }
+  showList(); advanceQueue();
+};
 
 /* ---------- ingresso foto ---------- */
 function updateQueueInfo(){ $('#queueInfo').textContent = state.queue.length ? 'altre ' + state.queue.length : ''; }
