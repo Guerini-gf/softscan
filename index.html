@@ -377,16 +377,29 @@ function warp(src, corners){
   return out;
 }
 
-/* ---------- rilevamento automatico dei bordi (semplice) ---------- */
+/* ---------- rilevamento automatico dei bordi (v2: luminosita + colore) ---------- */
 function autoCorners(src){
   const sc = Math.min(1, 360 / Math.max(src.width, src.height));
   const w = Math.max(8, Math.round(src.width * sc)), h = Math.max(8, Math.round(src.height * sc));
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const g = c.getContext('2d'); g.drawImage(src, 0, 0, w, h);
-  const d = g.getImageData(0, 0, w, h).data, n = w * h, gray = new Float32Array(n);
-  for (let i = 0; i < n; i++) gray[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
-  const bl = boxBlur(gray, w, h, 2);
-  const hist = new Array(256).fill(0);
+  const d = g.getImageData(0, 0, w, h).data, n = w * h;
+  const gray = new Float32Array(n), sat = new Float32Array(n), val = new Float32Array(n);
+  for (let i = 0; i < n; i++){
+    const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2];
+    const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+    gray[i] = 0.299 * r + 0.587 * gg + 0.114 * b; val[i] = mx / 255; sat[i] = mx ? (mx - mn) / mx : 0;
+  }
+  // chiude i buchi (scritte, righe) in una maschera
+  const closeMask = (m, r) => {
+    const f = new Float32Array(n); for (let i = 0; i < n; i++) f[i] = m[i] ? 255 : 0;
+    const dil = maxFilter(f, w, h, r); for (let i = 0; i < n; i++) dil[i] = 255 - dil[i];
+    const er = maxFilter(dil, w, h, r), o = new Uint8Array(n);
+    for (let i = 0; i < n; i++) o[i] = er[i] < 128 ? 1 : 0;
+    return o;
+  };
+  // maschera A: parti chiare (soglia di Otsu sulla luminosita)
+  const bl = boxBlur(gray, w, h, 2), hist = new Array(256).fill(0);
   for (let i = 0; i < n; i++) hist[Math.min(255, Math.round(bl[i]))]++;
   let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
   let sB = 0, wB = 0, mx = 0, thr = 128;
@@ -397,33 +410,44 @@ function autoCorners(src){
     const mB = sB / wB, mF = (sum - sB) / wF, v = wB * wF * (mB - mF) * (mB - mF);
     if (v > mx){ mx = v; thr = t; }
   }
-  const mask = new Uint8Array(n);
-  for (let i = 0; i < n; i++) if (bl[i] > thr) mask[i] = 1;
-  const lab = new Uint8Array(n), stack = new Int32Array(n);
-  let best = null;
-  for (let s0 = 0; s0 < n; s0++){
-    if (!mask[s0] || lab[s0]) continue;
-    let sp = 0, size = 0; stack[sp++] = s0; lab[s0] = 1;
-    let minS = 1e9, maxS = -1e9, minD = 1e9, maxD = -1e9, pTL, pBR, pBL, pTR;
-    while (sp){
-      const p = stack[--sp], x = p % w, y = (p / w) | 0; size++;
-      const S = x + y, D = x - y;
-      if (S < minS){ minS = S; pTL = [x, y]; } if (S > maxS){ maxS = S; pBR = [x, y]; }
-      if (D < minD){ minD = D; pBL = [x, y]; } if (D > maxD){ maxD = D; pTR = [x, y]; }
-      if (x > 0 && mask[p - 1] && !lab[p - 1]){ lab[p - 1] = 1; stack[sp++] = p - 1; }
-      if (x < w - 1 && mask[p + 1] && !lab[p + 1]){ lab[p + 1] = 1; stack[sp++] = p + 1; }
-      if (y > 0 && mask[p - w] && !lab[p - w]){ lab[p - w] = 1; stack[sp++] = p - w; }
-      if (y < h - 1 && mask[p + w] && !lab[p + w]){ lab[p + w] = 1; stack[sp++] = p + w; }
+  const mA = new Uint8Array(n); for (let i = 0; i < n; i++) if (bl[i] > thr) mA[i] = 1;
+  // maschera B: carta = poco colorata e non troppo scura (regge le ombre e il tavolo di legno)
+  const vs = Array.from(val).sort((a, b) => a - b), v90 = vs[Math.floor(n * 0.9)] || 1;
+  const mB2 = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (sat[i] < 0.21 && val[i] > 0.2 * v90) mB2[i] = 1;
+  const comp = mask => {
+    const lab = new Uint8Array(n), stack = new Int32Array(n); let best = null;
+    for (let s0 = 0; s0 < n; s0++){
+      if (!mask[s0] || lab[s0]) continue;
+      let sp = 0, size = 0, ss = 0; stack[sp++] = s0; lab[s0] = 1;
+      let minS = 1e9, maxS = -1e9, minD = 1e9, maxD = -1e9, pTL, pBR, pBL, pTR;
+      while (sp){
+        const p = stack[--sp], x = p % w, y = (p / w) | 0; size++; ss += sat[p];
+        const S = x + y, D = x - y;
+        if (S < minS){ minS = S; pTL = [x, y]; } if (S > maxS){ maxS = S; pBR = [x, y]; }
+        if (D < minD){ minD = D; pBL = [x, y]; } if (D > maxD){ maxD = D; pTR = [x, y]; }
+        if (x > 0 && mask[p - 1] && !lab[p - 1]){ lab[p - 1] = 1; stack[sp++] = p - 1; }
+        if (x < w - 1 && mask[p + 1] && !lab[p + 1]){ lab[p + 1] = 1; stack[sp++] = p + 1; }
+        if (y > 0 && mask[p - w] && !lab[p - w]){ lab[p - w] = 1; stack[sp++] = p - w; }
+        if (y < h - 1 && mask[p + w] && !lab[p + w]){ lab[p + w] = 1; stack[sp++] = p + w; }
+      }
+      if (!best || size > best.size) best = { size, ss, pts: [pTL, pTR, pBR, pBL] };
     }
-    if (!best || size > best.size) best = { size, pts: [pTL, pTR, pBR, pBL] };
-  }
-  if (!best) return null;
-  const ratio = best.size / n;
-  if (ratio < 0.2 || ratio > 0.97) return null;
-  const q = best.pts.map(([x, y]) => [(x + .5) / w, (y + .5) / h]);
-  const area = Math.abs(q[0][0] * q[1][1] - q[1][0] * q[0][1] + q[1][0] * q[2][1] - q[2][0] * q[1][1] + q[2][0] * q[3][1] - q[3][0] * q[2][1] + q[3][0] * q[0][1] - q[0][0] * q[3][1]) / 2;
-  if (area < 0.2) return null;
-  return q;
+    return best;
+  };
+  const polyArea = q => Math.abs(q[0][0] * q[1][1] - q[1][0] * q[0][1] + q[1][0] * q[2][1] - q[2][0] * q[1][1] + q[2][0] * q[3][1] - q[3][0] * q[2][1] + q[3][0] * q[0][1] - q[0][0] * q[3][1]) / 2;
+  const valuta = mask => {
+    const b = comp(mask); if (!b) return null;
+    const ratio = b.size / n; if (ratio < 0.2 || ratio > 0.97) return null;
+    const q = b.pts.map(([x, y]) => [(x + .5) / w, (y + .5) / h]);
+    const area = polyArea(q); if (area < 0.2) return null;
+    const colore = Math.max(0.1, 1 - 2 * (b.ss / b.size));   // la carta e poco colorata
+    return { q, score: Math.min(1, ratio / area) * Math.sqrt(ratio) * colore };
+  };
+  const ris = [valuta(closeMask(mA, 2)), valuta(closeMask(mB2, 3))].filter(Boolean);
+  if (!ris.length) return null;
+  ris.sort((a, b) => b.score - a.score);
+  return ris[0].q;
 }
 const DEFAULT_CORNERS = () => [[.04, .04], [.96, .04], [.96, .96], [.04, .96]];
 
