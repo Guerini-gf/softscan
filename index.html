@@ -273,13 +273,42 @@ const DB = (() => {
     });
   };
   return {
-    all: () => tx('readonly', s => s.getAll()),
-    put: p => tx('readwrite', s => s.put(p)),
+    all: async () => (await tx('readonly', s => s.getAll())).map(fromRec),
+    put: async p => { if (p.rotto) return; const r = await toRec(p); return tx('readwrite', s => s.put(r)); },
     del: id => tx('readwrite', s => s.delete(id)),
     clear: () => tx('readwrite', s => s.clear())
   };
 })();
 let avvisoArchivio = false;
+/* Safari su iPhone a volte non riesce piu a rileggere i Blob salvati in IndexedDB ("The object can not be found here"):
+   per questo le immagini si salvano come byte (ArrayBuffer) e si ricostruiscono all'apertura. */
+async function toRec(p){
+  const r = Object.assign({}, p);
+  const sv = async b => b ? { b: await b.arrayBuffer(), t: b.type || 'image/jpeg' } : null;
+  r.out = await sv(p.out); r.orig = await sv(p.orig);
+  if (p.scheda) r.scheda = Object.assign({}, p.scheda, { foto: await sv(p.scheda.foto) });
+  delete r._nuovo; delete r.rotto; r._fmt = 2;
+  return r;
+}
+function fromRec(r){
+  if (r._fmt !== 2) return r;   // vecchio formato (Blob): viene migrato all'avvio
+  const mk = x => x ? new Blob([x.b], { type: x.t }) : null;
+  const p = Object.assign({}, r);
+  p.out = mk(r.out); p.orig = mk(r.orig);
+  if (r.scheda) p.scheda = Object.assign({}, r.scheda, { foto: mk(r.scheda.foto) });
+  delete p._fmt; p._nuovo = true;
+  return p;
+}
+async function migra(){
+  let rotte = 0;
+  for (const p of state.pages){
+    if (p._nuovo) continue;
+    try { await DB.put(p); p._nuovo = true; } catch (e){ p.rotto = true; rotte++; }
+  }
+  if (rotte) toast(rotte === 1 ? 'Una pagina non \u00e8 pi\u00f9 leggibile: eliminala e rifai la scansione' : rotte + ' pagine non sono pi\u00f9 leggibili: eliminale e rifai le scansioni');
+  renderList();
+}
+
 const safe = async fn => {
   try { return await fn(); }
   catch (e) {
@@ -697,8 +726,8 @@ function renderList(){
   g.style.display = n ? 'grid' : 'none';
   $('#btnPdf').disabled = !n;
   state.pages.forEach((p, i) => {
-    const d = document.createElement('div'); d.className = 'card';
-    d.innerHTML = '<img alt="Pagina ' + (i + 1) + '" src="' + p.thumb + '"><div class="cr"><span class="n">' + (p.kind === 'scheda' ? '&#128221; ' : '') + (i + 1) +
+    const d = document.createElement('div'); d.className = 'card'; if (p.rotto) d.style.opacity = '.55';
+    d.innerHTML = '<img alt="Pagina ' + (i + 1) + '" src="' + p.thumb + '"><div class="cr"><span class="n">' + (p.rotto ? '&#9888; ' : '') + (p.kind === 'scheda' ? '&#128221; ' : '') + (i + 1) +
       '</span><button data-a="l" aria-label="Sposta prima">&#9664;</button><button data-a="r" aria-label="Sposta dopo">&#9654;</button>' +
       (p.kind === 'scheda' ? '' : '<button data-a="s" aria-label="Scheda ricetta">&#128221;</button>') +
       '<button data-a="d" aria-label="Elimina">&#10005;</button></div>';
@@ -1001,7 +1030,10 @@ async function buildPDF(pages, fit){
   offs[1] = pos; push('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
   offs[2] = pos; push('2 0 obj\n<< /Type /Pages /Kids [' + pages.map((_, i) => (3 + 3 * i) + ' 0 R').join(' ') + '] /Count ' + N + ' >>\nendobj\n');
   for (let i = 0; i < N; i++){
-    const p = pages[i], jpg = new Uint8Array(await p.out.arrayBuffer()), w = p.w, h = p.h, n = 3 + 3 * i;
+    const p = pages[i], w = p.w, h = p.h, n = 3 + 3 * i;
+    let jpg;
+    try { jpg = new Uint8Array(await p.out.arrayBuffer()); }
+    catch (e){ throw new Error('La pagina ' + (i + 1) + ' non \u00e8 pi\u00f9 leggibile: eliminala e rifai la scansione'); }
     let pw, ph, x, y, iw, ih;
     if (fit === 'a4'){
       const land = w > h; pw = land ? 841.89 : 595.28; ph = land ? 595.28 : 841.89;
@@ -1115,6 +1147,7 @@ $('#askInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('#ask
   const all = await safe(() => DB.all());
   if (all) state.pages = all.sort((a, b) => a.order - b.order);
   renderList();
+  if (all) migra();
   if (navigator.storage && navigator.storage.persist) safe(() => navigator.storage.persist());
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
