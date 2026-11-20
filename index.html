@@ -134,9 +134,10 @@ input[type=text],input[type=password],select{font:inherit;background:var(--bg);c
 <!-- SCHEDA RICETTA -->
 <section class="view" id="viewCard">
   <img id="cdPhoto" alt="Foto della ricetta">
+  <div class="row"><button class="sm pri" id="cdIA">&#10024; Leggi con IA</button><span class="mut">oppure scrivi tu le celle</span></div>
   <div id="cardForm">
     <label>Titolo<input type="text" id="cdTitle" placeholder="Es. Frolla" autocomplete="off"></label>
-    <div class="mut">Ingredienti: scrivi il numero e il programma mette l unitÃ  (2000 diventa 2 Kg, 600 diventa 600 Gr.). Sulla tastiera puoi dettare con il microfono.</div>
+    <div class="mut">Ingredienti: scrivi il numero e il programma mette l unità (2000 diventa 2 Kg, 600 diventa 600 Gr.). Sulla tastiera puoi dettare con il microfono.</div>
     <div id="cdRows"></div>
     <button class="sm" id="cdAddRow">+ Ingrediente</button>
     <label>Procedimento<textarea id="cdProc" rows="4"></textarea></label>
@@ -176,10 +177,12 @@ input[type=text],input[type=password],select{font:inherit;background:var(--bg);c
   <div class="box">
     <h2>Opzioni</h2>
     <button id="setPin">PIN di blocco</button>
+    <button id="setKey">Chiave IA (lettura ricette)</button>
     <button id="setClear" style="color:var(--danger)">Svuota tutte le pagine</button>
     <div class="mut">Le pagine restano solo su questo telefono. Per portarle sul PC usa il PDF e Condividi &rarr; LocalSend.<br><br>
     Per averla come app: in Safari tocca Condividi &rarr; <i>Aggiungi alla schermata Home</i>.<br><br>
-    Il PIN blocca solo lo schermo: non cifra i file.</div>
+    Il PIN blocca solo lo schermo: non cifra i file.<br><br>
+    La lettura con IA è facoltativa: serve una chiave tua e la foto della ricetta viene inviata ad Anthropic solo quando tocchi "Leggi con IA".</div>
     <button class="ghost" id="setClose">Chiudi</button>
   </div>
 </div>
@@ -194,6 +197,22 @@ input[type=text],input[type=password],select{font:inherit;background:var(--bg);c
       <button class="fl" id="askNo">Annulla</button>
       <button class="pri fl" id="askOk">OK</button>
     </div>
+  </div>
+</div>
+
+<!-- CHIAVE IA -->
+<div class="overlay" id="ovKey" style="z-index:70">
+  <div class="box">
+    <h2>Chiave per la lettura con IA</h2>
+    <div class="mut">Serve a leggere la scrittura a mano. La foto viene inviata ad Anthropic (servizio esterno) solo quando tocchi "Leggi con IA". Incolla una chiave API tua, meglio una creata apposta per SoftScan con un limite di spesa, così la puoi revocare quando vuoi. Non scriverla mai in chat.</div>
+    <input type="password" id="keyInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-ant-...">
+    <label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="keyKeep" checked style="width:auto"> Ricordala su questo telefono</label>
+    <div class="mut" id="keyMsg"></div>
+    <div style="display:flex;gap:8px">
+      <button class="fl" id="keyNo">Annulla</button>
+      <button class="pri fl" id="keyOk">Salva</button>
+    </div>
+    <button class="ghost" id="keyDel">Togli la chiave dal telefono</button>
   </div>
 </div>
 
@@ -737,12 +756,12 @@ function cdRender(){
   const box = $('#cdRows'); box.innerHTML = '';
   cd.righe.forEach((r, i) => {
     const d = document.createElement('div'); d.className = 'cdrow';
-    const q = document.createElement('input'); q.type = 'text'; q.inputMode = 'decimal'; q.placeholder = 'QtÃ '; q.value = r.q;
+    const q = document.createElement('input'); q.type = 'text'; q.inputMode = 'decimal'; q.placeholder = 'Qtà'; q.value = r.q;
     const u = document.createElement('select');
-    UNITA.forEach(x => { const o = document.createElement('option'); o.value = x; o.textContent = x || 'â€”'; u.appendChild(o); });
+    UNITA.forEach(x => { const o = document.createElement('option'); o.value = x; o.textContent = x || '—'; u.appendChild(o); });
     u.value = r.u;
     const n = document.createElement('input'); n.type = 'text'; n.placeholder = 'Ingrediente'; n.value = r.i;
-    const x = document.createElement('button'); x.className = 'sm'; x.textContent = 'âœ•'; x.setAttribute('aria-label', 'Togli riga');
+    const x = document.createElement('button'); x.className = 'sm'; x.textContent = '✕'; x.setAttribute('aria-label', 'Togli riga');
     const norm = () => { const [nq, nu] = normQty(q.value, u.value); r.q = nq; r.u = nu; q.value = nq; u.value = nu; };
     q.oninput = () => { r.q = q.value; }; q.onchange = norm; u.onchange = norm; n.oninput = () => { r.i = n.value; };
     x.onclick = () => { cd.righe.splice(i, 1); if (!cd.righe.length) cd.righe.push({ q: '', u: '', i: '' }); cdRender(); };
@@ -864,6 +883,89 @@ $('#cdSave').onclick = async () => {
   finally { busy(false); }
   showList();
 };
+
+/* ---------- lettura con IA (facoltativa: la chiave la incolla Gianfelice, mai in chat) ---------- */
+const IA_MODEL = 'claude-sonnet-5-5';
+let keyMem = '', pendingIA = false;
+const getKey = () => { try { return keyMem || localStorage.getItem('ss_key') || ''; } catch (e){ return keyMem; } };
+function setKey(v, keep){
+  keyMem = v || '';
+  try { if (v && keep) localStorage.setItem('ss_key', v); else localStorage.removeItem('ss_key'); } catch (e){}
+}
+function openKey(){
+  $('#keyInput').value = '';
+  const k = getKey();
+  $('#keyMsg').textContent = k ? 'Una chiave è già salvata (finisce con ' + k.slice(-4) + '). Incollane una nuova per sostituirla.' : '';
+  $('#ovKey').classList.add('on');
+}
+$('#setKey').onclick = () => { $('#ovSet').classList.remove('on'); openKey(); };
+$('#keyNo').onclick = () => { pendingIA = false; $('#ovKey').classList.remove('on'); };
+$('#keyDel').onclick = () => { setKey('', false); pendingIA = false; $('#ovKey').classList.remove('on'); toast('Chiave tolta dal telefono'); };
+$('#keyOk').onclick = () => {
+  const v = $('#keyInput').value.trim();
+  if (!v){ $('#keyMsg').textContent = 'Incolla la chiave nel campo.'; return; }
+  if (!/^sk-[A-Za-z0-9_\-]{20,}$/.test(v)){ $('#keyMsg').textContent = 'Non sembra una chiave Anthropic (inizia con sk-ant-).'; return; }
+  setKey(v, $('#keyKeep').checked); $('#keyInput').value = ''; $('#ovKey').classList.remove('on'); toast('Chiave salvata');
+  if (pendingIA){ pendingIA = false; leggiConIA(); }
+};
+const PROMPT_IA = `Sei un assistente che trascrive ricette scritte a mano in italiano. Guarda la foto e rispondi SOLO con un oggetto JSON, senza testo prima o dopo e senza apici inversi, con questa forma esatta: {"titolo": "", "righe": [{"q": "", "u": "", "i": ""}], "procedimento": "", "note": ""}. Regole: "q" è la quantità copiata ESATTAMENTE come è scritta (2000 resta "2000", non convertire); "u" è l'unità solo se è scritta (gr, kg, lt, ml, pz, q.b.), altrimenti stringa vuota; "i" è l'ingrediente con le specifiche scritte accanto (per esempio "margarina foglio oro"); una riga per ingrediente, nell'ordine della pagina; se una parola non è leggibile con certezza scrivila come meglio puoi e aggiungi [?] subito dopo; se mancano procedimento o note lascia stringa vuota; non inventare nulla. Se nella foto non c'è una ricetta restituisci titolo vuoto e righe vuote.`;
+async function fotoPerIA(blob){
+  const bmp = await createImageBitmap(blob), sc = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas'); c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  const url = c.toDataURL('image/jpeg', 0.85);
+  return url.slice(url.indexOf(',') + 1);
+}
+function unitaDa(u){
+  const t = String(u || '').toLowerCase().replace(/\./g, '').trim();
+  const m = { g: 'Gr.', gr: 'Gr.', grammi: 'Gr.', kg: 'Kg', chili: 'Kg', l: 'Lt', lt: 'Lt', litri: 'Lt', ml: 'Ml', pz: 'Pz', pezzi: 'Pz', qb: 'q.b.' };
+  return m[t] || '';
+}
+function cdFill(){ $('#cdTitle').value = cd.titolo; $('#cdProc').value = cd.proc; $('#cdNote').value = cd.note; cdRender(); }
+async function leggiConIA(){
+  const key = getKey();
+  if (!key){ pendingIA = true; openKey(); return; }
+  const pieno = cd.righe.some(r => r.q || r.i) || cd.titolo || cd.proc || cd.note;
+  if (pieno && !confirm('Sostituire quello che hai già scritto con la lettura dell’IA?')) return;
+  let ok = false; try { ok = localStorage.getItem('ss_ia_ok') === '1'; } catch (e){}
+  if (!ok){
+    if (!confirm('La foto di questa ricetta verrà inviata ad Anthropic (servizio esterno) per essere letta. Continuare?')) return;
+    try { localStorage.setItem('ss_ia_ok', '1'); } catch (e){}
+  }
+  busy(true, 'Leggo la ricetta... può servire fino a un minuto');
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 70000);
+  try {
+    const b64 = await fotoPerIA(cd.foto);
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', signal: ctl.signal,
+      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: IA_MODEL, max_tokens: 2500, messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: PROMPT_IA } ] }] })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok){
+      throw new Error(r.status === 401 ? 'Chiave non valida o scaduta: rimettila dalle Opzioni.'
+        : r.status === 429 ? 'Troppe richieste o limite di spesa raggiunto: riprova più tardi.'
+        : r.status >= 500 ? 'Il servizio è occupato: riprova tra poco.'
+        : ((j.error && j.error.message) || ('Errore ' + r.status)));
+    }
+    const txt = (j.content || []).filter(x => x.type === 'text').map(x => x.text).join('');
+    const a = txt.indexOf('{'), z = txt.lastIndexOf('}');
+    if (a < 0 || z < a) throw new Error('Risposta non leggibile: riprova o scrivi a mano.');
+    const dati = JSON.parse(txt.slice(a, z + 1));
+    cd.titolo = String(dati.titolo || ''); cd.proc = String(dati.procedimento || ''); cd.note = String(dati.note || '');
+    cd.righe = (Array.isArray(dati.righe) ? dati.righe : []).map(x => {
+      const [q2, u2] = normQty(String((x && x.q) || ''), unitaDa(x && x.u)); return { q: q2, u: u2, i: String((x && x.i) || '') };
+    });
+    if (!cd.righe.length) cd.righe.push({ q: '', u: '', i: '' });
+    cdFill();
+    toast(cd.titolo || cd.righe.some(r => r.i) ? 'Letto: controlla bene, l’IA può sbagliare' : 'Non ho trovato una ricetta nella foto');
+  } catch (e){
+    toast(e.name === 'AbortError' ? 'Tempo scaduto: riprova.'
+      : (e.message && !/Failed to fetch|Load failed|NetworkError/i.test(e.message) ? e.message : 'Nessuna connessione o servizio non raggiungibile.'));
+  } finally { clearTimeout(to); busy(false); }
+}
+$('#cdIA').onclick = leggiConIA;
 
 /* ---------- ingresso foto ---------- */
 function updateQueueInfo(){ $('#queueInfo').textContent = state.queue.length ? 'altre ' + state.queue.length : ''; }
