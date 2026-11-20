@@ -124,6 +124,7 @@ input[type=text],input[type=password],select{font:inherit;background:var(--bg);c
   </div>
   <div class="hint" id="eraseHint" style="display:none">Passa il dito sulla scritta o sulla macchia da togliere.</div>
   <div id="resWrap"><canvas id="resCanvas"></canvas></div>
+  <div class="row"><button class="pri fl" id="btnRicetta">&#128221; Crea scheda ricetta (legge da sola)</button></div>
   <div class="bar">
     <button id="btnResBack">&#9666; Ritaglio</button>
     <button class="pri fl" id="btnSave">Salva</button>
@@ -690,7 +691,8 @@ $('#btnEraseUndo').onclick = () => {
   c.addEventListener('pointerup', end); c.addEventListener('pointercancel', end);
 })();
 
-async function savePage(){
+async function savePage(opts){
+  let saved = null;
   busy(true, 'Salvo la pagina...');
   try {
     const c = ed.outCanvas;
@@ -705,11 +707,19 @@ async function savePage(){
     if (page) Object.assign(page, data);
     else { page = Object.assign({ id: uid(), order: state.pages.length }, data); state.pages.push(page); }
     await safe(() => DB.put(page));
+    saved = page;
   } finally { busy(false); }
   ed.eraseOn = false;
-  showList();
+  if (!(opts && opts.noList)) showList();
+  return saved;
 }
 $('#btnSave').onclick = async () => { await savePage(); advanceQueue(); };
+$('#btnRicetta').onclick = async () => {
+  const p = await savePage({ noList: true });
+  if (!p) return;
+  openCardNew(p);
+  setTimeout(() => leggiConIA(), 250);   // legge la foto da sola; se manca la chiave la chiede
+};
 $('#btnSaveMore').onclick = () => {
   if (state.queue.length){ savePage().then(advanceQueue); return; }
   ed.pending = savePage();          // salvo in sottofondo mentre si apre la fotocamera
@@ -819,7 +829,7 @@ $('#cdAddRow').onclick = () => {
   cd.righe.push({ q: '', u: '', i: '' }); cdRender();
   const last = $('#cdRows').lastElementChild; if (last) last.querySelector('input').focus();
 };
-$('#cdCancel').onclick = showList;
+$('#cdCancel').onclick = () => { showList(); advanceQueue(); };
 
 function rrect(g, x, y, w, h, r){
   g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
@@ -910,7 +920,7 @@ $('#cdSave').onclick = async () => {
     for (let k = from; k < state.pages.length; k++) await safe(() => DB.put(state.pages[k]));
   } catch (e){ toast('Scheda non riuscita: ' + e.message); }
   finally { busy(false); }
-  showList();
+  showList(); advanceQueue();
 };
 
 /* ---------- lettura con IA (facoltativa: la chiave la incolla Gianfelice, mai in chat) ---------- */
