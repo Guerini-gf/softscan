@@ -160,7 +160,9 @@ input[type=text],input[type=password],select{font:inherit;background:var(--bg);c
   <div class="row"><button class="sm pri" id="dcIA">&#10024; Leggi con IA</button><span class="mut">oppure scrivi o correggi tu</span></div>
   <div id="docForm">
     <label style="flex-direction:row;align-items:center;gap:8px;font-size:14px;color:var(--mut)"><input type="checkbox" id="dcFotoOn" style="width:auto"> Metti anche la foto in cima alla prima pagina</label>
+    <label style="flex-direction:row;align-items:center;gap:8px;font-size:14px;color:var(--mut)"><input type="checkbox" id="dcCorreggi" checked style="width:auto"> Correggi gli errori di testo (ti mostro l&rsquo;elenco)</label>
     <div class="mut">Formato: # titolo, ## sezione, - elenco, celle separate da | per le tabelle, riga vuota tra i paragrafi. [?] segna una parola incerta.</div>
+    <div id="dcCorr" class="mut" style="display:none;white-space:pre-wrap;background:var(--panel);border-radius:10px;padding:10px"></div>
     <textarea id="dcText" rows="16" spellcheck="false" style="font-family:ui-monospace,Menlo,monospace;font-size:14px"></textarea>
   </div>
   <div class="bar">
@@ -981,7 +983,7 @@ $('#keyOk').onclick = () => {
   setKey(v, $('#keyKeep').checked); $('#keyInput').value = ''; $('#ovKey').classList.remove('on'); toast('Chiave salvata');
   if (pendingIA){ const f = pendingIA; pendingIA = null; f(); }
 };
-const PROMPT_IA = `Sei un assistente che trascrive ricette scritte a mano in italiano. Guarda la foto e rispondi SOLO con un oggetto JSON, senza testo prima o dopo e senza apici inversi, con questa forma esatta: {"titolo": "", "righe": [{"q": "", "u": "", "i": ""}], "procedimento": "", "note": ""}. Regole: "q" è la quantità copiata ESATTAMENTE come è scritta (2000 resta "2000", non convertire); "u" è l'unità solo se è scritta (gr, kg, lt, ml, pz, q.b.), altrimenti stringa vuota; "i" è l'ingrediente con le specifiche scritte accanto (per esempio "margarina foglio oro"); una riga per ingrediente, nell'ordine della pagina; se una parola non è leggibile con certezza scrivila come meglio puoi e aggiungi [?] subito dopo; se mancano procedimento o note lascia stringa vuota; non inventare nulla. Se nella foto non c'è una ricetta restituisci titolo vuoto e righe vuote.`;
+const PROMPT_IA = `Sei un assistente che trascrive ricette scritte a mano in italiano. Guarda la foto e rispondi SOLO con un oggetto JSON, senza testo prima o dopo e senza apici inversi, con questa forma esatta: {"titolo": "", "righe": [{"q": "", "u": "", "i": ""}], "procedimento": "", "note": ""}. Regole: "q" è la quantità copiata ESATTAMENTE come è scritta (2000 resta "2000", non convertire); "u" è l'unità solo se è scritta (gr, kg, lt, ml, pz, q.b.), altrimenti stringa vuota; "i" è l'ingrediente con le specifiche scritte accanto (per esempio "margarina foglio oro"); una riga per ingrediente, nell'ordine della pagina; se una parola non è leggibile con certezza scrivila come meglio puoi e aggiungi [?] subito dopo; se mancano procedimento o note lascia stringa vuota; non inventare nulla, ma correggi gli errori di ortografia evidenti senza cambiare quantit\u00e0, numeri o ingredienti. Se nella foto non c'è una ricetta restituisci titolo vuoto e righe vuote.`;
 async function fotoPerIA(blob){
   const bmp = await createImageBitmap(blob), sc = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
   const c = document.createElement('canvas'); c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
@@ -1048,8 +1050,9 @@ async function leggiConIA(){
 $('#cdIA').onclick = leggiConIA;
 
 /* ---------- documento in pulito: qualsiasi documento (anche legale), testo ricostruito su pagine A4 ---------- */
-const PROMPT_DOC = `Trascrivi fedelmente il testo di questa foto di un documento (nella lingua in cui \u00e8 scritto) e ricostruisci l'impaginazione semplice usando SOLO questo formato di testo: "# " all'inizio della riga per il titolo principale, "## " per i titoli di sezione, "- " per gli elenchi, celle separate da " | " per le tabelle (una riga di testo per ogni riga della tabella), una riga vuota tra un paragrafo e l'altro. Regole: copia il testo ESATTAMENTE come \u00e8 scritto, senza correggere, riassumere, tradurre o aggiungere nulla; mantieni numeri, date, importi, nomi, indirizzi, articoli di legge e punteggiatura; se una parola non \u00e8 leggibile con certezza scrivila come meglio puoi seguita da [?]; per un tratto del tutto illeggibile scrivi [illeggibile]; per le firme scrivi [firma], per timbri e loghi [timbro] o [logo]; le caselle come [ ] oppure [x]. Rispondi SOLO con il testo ricostruito, senza commenti prima o dopo e senza blocchi di codice.`;
-const dc = { gid: null, foto: null, testo: '', conFoto: false, url: null };
+const PROMPT_DOC_COMUNE = `Trascrivi il testo di questa foto di un documento (nella lingua in cui \u00e8 scritto) e ricostruisci l'impaginazione semplice usando SOLO questo formato di testo: "# " all'inizio della riga per il titolo principale, "## " per i titoli di sezione, "- " per gli elenchi, celle separate da " | " per le tabelle (una riga di testo per ogni riga della tabella), una riga vuota tra un paragrafo e l'altro.`;
+const PROMPT_DOC_FEDELE = PROMPT_DOC_COMUNE + ` Regole: copia il testo ESATTAMENTE come \u00e8 scritto, senza correggere, riassumere, tradurre o aggiungere nulla; mantieni numeri, date, importi, nomi, indirizzi, articoli di legge e punteggiatura; se una parola non \u00e8 leggibile con certezza scrivila come meglio puoi seguita da [?]; per un tratto del tutto illeggibile scrivi [illeggibile]; per le firme scrivi [firma], per timbri e loghi [timbro] o [logo]; le caselle come [ ] oppure [x]. Rispondi SOLO con il testo ricostruito, senza commenti prima o dopo e senza blocchi di codice.`;
+const PROMPT_DOC_CORRETTO = PROMPT_DOC_COMUNE + ` Regole: copia il testo come \u00e8 scritto, ma correggi gli errori evidenti di battitura, ortografia, accenti, maiuscole e punteggiatura, senza cambiare il significato e senza toccare numeri, date, importi, nomi propri, indirizzi e citazioni di legge; non riassumere, non tradurre e non aggiungere nulla; se una parola non \u00e8 leggibile con certezza scrivila come meglio puoi seguita da [?]; per un tratto del tutto illeggibile scrivi [illeggibile]; per le firme scrivi [firma], per timbri e loghi [timbro] o [logo]; le caselle come [ ] oppure [x]. Dopo il testo vai a capo e scrivi esattamente ===CORREZIONI=== e poi una riga per ogni correzione fatta nel formato "- originale -> corretto" (se non hai corretto nulla scrivi "- nessuna"). Rispondi SOLO con il testo ricostruito e questo elenco, senza altri commenti e senza blocchi di codice.`;const dc = { gid: null, foto: null, testo: '', conFoto: false, url: null };
 function dcShow(){
   $('#dcText').value = dc.testo; $('#dcFotoOn').checked = !!dc.conFoto;
   if (dc.url) URL.revokeObjectURL(dc.url);
@@ -1068,15 +1071,24 @@ async function leggiDoc(){
   if (!getKey()){ pendingIA = leggiDoc; openKey(); return; }
   if (dc.testo.trim() && !confirm('Sostituire il testo che hai gi\u00e0 scritto con la lettura dell\u2019IA?')) return;
   if (!confirm('Stai per inviare la foto di questo documento ad Anthropic (servizio esterno). Se contiene dati personali o riservati, valuta se \u00e8 il caso. Continuare?')) return;
-  const txt = await chiamaIA(dc.foto, PROMPT_DOC, 4000, 'Leggo il documento... pu\u00f2 servire fino a un minuto');
+  const correggi = $('#dcCorreggi').checked;
+  const txt = await chiamaIA(dc.foto, correggi ? PROMPT_DOC_CORRETTO : PROMPT_DOC_FEDELE, 4500, 'Leggo il documento... pu\u00f2 servire fino a un minuto');
   if (txt === null) return;
-  dc.testo = pulisciTesto(txt); $('#dcText').value = dc.testo;
-  toast(dc.testo ? 'Letto: controlla bene, l\u2019IA pu\u00f2 sbagliare' : 'Non ho trovato testo nella foto');
+  const parti = pulisciTesto(txt).split('===CORREZIONI===');
+  dc.testo = parti[0].trim(); $('#dcText').value = dc.testo;
+  const corr = (parti[1] || '').split('\n').map(x => x.trim()).filter(x => x.startsWith('-') && !/nessuna/i.test(x));
+  const box = $('#dcCorr');
+  if (correggi && corr.length){ box.style.display = 'block'; box.textContent = 'Correzioni fatte dall\u2019IA (' + corr.length + '), controllale:\n' + corr.join('\n'); }
+  else { box.style.display = 'none'; box.textContent = ''; }
+  toast(!dc.testo ? 'Non ho trovato testo nella foto' : corr.length ? 'Letto: ' + corr.length + ' correzioni da controllare' : 'Letto: controlla bene, l\u2019IA pu\u00f2 sbagliare');
 }
 $('#dcIA').onclick = leggiDoc;
 
 async function renderDocPages(d){
-  const W = 1240, H = 1754, M = 100, IW = W - 2 * M, F = '"Helvetica Neue", Arial, sans-serif';
+  // Pagina A4 a 150 dpi: margini 19 mm ai lati, corpo 12,5 pt, interlinea 1,45, giustificato, titoli mai soli in fondo,
+  // niente righe sole in cima o in fondo, intestazione delle tabelle ripetuta, numero di pagina.
+  const W = 1240, H = 1754, MX = 112, MT = 120, MB = 140, IW = W - 2 * MX, F = '"Helvetica Neue", Arial, sans-serif';
+  const FS = 26, LH = 38, FONT = FS + 'px ' + F;
   const mg = document.createElement('canvas').getContext('2d');
   const wrapT = (txt, font, maxW) => {
     mg.font = font; const out = [];
@@ -1092,16 +1104,40 @@ async function renderDocPages(d){
   };
   const pagine = []; let c, g, y;
   const nuova = () => {
-    const pf = g ? g.font : '30px ' + F, pa = g ? g.textAlign : 'left';   // la nuova pagina eredita carattere e allineamento
+    const pf = g ? g.font : FONT, pa = g ? g.textAlign : 'left';
     c = document.createElement('canvas'); c.width = W; c.height = H; g = c.getContext('2d');
-    g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.textBaseline = 'top'; g.fillStyle = '#111'; g.font = pf; g.textAlign = pa; y = M; pagine.push(c);
+    g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.textBaseline = 'top'; g.fillStyle = '#111'; g.font = pf; g.textAlign = pa; y = MT; pagine.push(c);
   };
-  const serve = h => { if (y + h > H - M) nuova(); };
+  const spazio = h => y + h <= H - MB;
+  const serve = h => { if (!spazio(h)) nuova(); };
   nuova();
   if (d.conFoto && d.foto){
     const bmp = await createImageBitmap(d.foto), sc = Math.min(IW / bmp.width, 720 / bmp.height), pw = bmp.width * sc, ph = bmp.height * sc;
     g.drawImage(bmp, (W - pw) / 2, y, pw, ph); g.strokeStyle = '#c9d2e6'; g.lineWidth = 2; g.strokeRect((W - pw) / 2, y, pw, ph); y += ph + 40;
   }
+  // riga giustificata (solo se gli spazi restano naturali)
+  const riga = (l, x, maxW, giust) => {
+    const parole = l.split(' ');
+    if (giust && parole.length >= 4){
+      mg.font = g.font;
+      const tot = parole.reduce((s, w) => s + mg.measureText(w).width, 0), sp = (maxW - tot) / (parole.length - 1), nat = mg.measureText(' ').width;
+      if (sp >= nat * 0.9 && sp <= nat * 2.6){ let px = x; parole.forEach(w => { g.fillText(w, px, y); px += mg.measureText(w).width + sp; }); return; }
+    }
+    g.fillText(l, x, y);
+  };
+  // paragrafo con controllo di righe orfane e vedove
+  const paragrafo = (ls, font, x, maxW, lh, giust) => {
+    g.font = font; g.textAlign = 'left'; let resto = ls.slice();
+    while (resto.length){
+      const stanno = Math.floor((H - MB - y) / lh);
+      if ((stanno < 2 && resto.length > 1) || stanno < 1){ nuova(); continue; }
+      let n = Math.min(stanno, resto.length);
+      if (resto.length - n === 1 && n >= 3) n -= 1;
+      const bloc = resto.slice(0, n); resto = resto.slice(n);
+      bloc.forEach((l, k) => { riga(l, x, maxW, giust && !(k === bloc.length - 1 && !resto.length)); y += lh; });
+      if (resto.length) nuova();
+    }
+  };
   const testo = (d.testo || '').replace(/\r/g, '').split('\n');
   const isTab = r => /\s\|\s/.test(r) || /^\s*\|/.test(r);
   const isSep = r => /^[\s|:\-]+$/.test(r) && r.includes('-') && r.includes('|');
@@ -1109,18 +1145,21 @@ async function renderDocPages(d){
   let i = 0;
   while (i < testo.length){
     const r = testo[i];
-    if (!r.trim()){ y += 22; i++; continue; }
+    if (!r.trim()){ if (y > MT) y += 20; i++; continue; }
     if (r.startsWith('# ')){
-      const f = 'bold 46px ' + F, ls = wrapT(r.slice(2), f, IW); g.font = f; g.textAlign = 'center';
-      y += 8; ls.forEach(l => { serve(62); g.fillText(l, W / 2, y); y += 62; }); y += 10; i++; continue;
+      const f = 'bold 44px ' + F, ls = wrapT(r.slice(2), f, IW);
+      serve(ls.length * 60 + 20 + LH * 3); if (y > MT) y += 8; g.font = f; g.textAlign = 'center';
+      ls.forEach(l => { g.fillText(l, W / 2, y); y += 60; }); y += 14; i++; continue;
     }
     if (r.startsWith('## ')){
-      const f = 'bold 36px ' + F, ls = wrapT(r.slice(3), f, IW); g.font = f; g.textAlign = 'left';
-      y += 10; ls.forEach(l => { serve(50); g.fillText(l, M, y); y += 50; }); y += 4; i++; continue;
+      const f = 'bold 32px ' + F, ls = wrapT(r.slice(3), f, IW);
+      serve(ls.length * 46 + 12 + LH * 3); if (y > MT) y += 12; g.font = f; g.textAlign = 'left';
+      ls.forEach(l => { g.fillText(l, MX, y); y += 46; }); y += 6; i++; continue;
     }
     if (/^\s*-\s+/.test(r)){
-      const f = '30px ' + F, ls = wrapT(r.replace(/^\s*-\s+/, ''), f, IW - 50); g.font = f; g.textAlign = 'left';
-      ls.forEach((l, k) => { serve(42); if (!k) g.fillText('\u2022', M + 12, y); g.fillText(l, M + 50, y); y += 42; }); i++; continue;
+      const ls = wrapT(r.replace(/^\s*-\s+/, ''), FONT, IW - 46); g.font = FONT; g.textAlign = 'left';
+      serve(Math.min(ls.length, 2) * LH);
+      ls.forEach((l, k) => { serve(LH); if (!k) g.fillText('\u2022', MX + 10, y); g.fillText(l, MX + 46, y); y += LH; }); i++; continue;
     }
     if (isTab(r)){
       const righe = []; let intest = false;
@@ -1128,24 +1167,33 @@ async function renderDocPages(d){
         if (isSep(testo[i])){ intest = righe.length === 1; } else righe.push(cellsDi(testo[i]));
         i++;
       }
-      const n = Math.max(1, ...righe.map(x => x.length)), cw = IW / n, f = '28px ' + F, fb = 'bold 28px ' + F;
-      righe.forEach((cells, ri) => {
-        const head = intest && ri === 0, font = head ? fb : f;
-        const col = Array.from({ length: n }, (_, k) => wrapT(cells[k] || '', font, cw - 22));
-        const rh = Math.max(...col.map(x => x.length)) * 38 + 18;
-        serve(rh);
+      const n = Math.max(1, ...righe.map(x => x.length)), cw = IW / n, f = '24px ' + F, fb = 'bold 24px ' + F;
+      const disegna = (cells, head) => {
+        const font = head ? fb : f, col = Array.from({ length: n }, (_, k) => wrapT(cells[k] || '', font, cw - 22));
+        const rh = Math.max(...col.map(x => x.length)) * 34 + 18;
         g.strokeStyle = '#555'; g.lineWidth = 2; g.font = font; g.textAlign = 'left';
         col.forEach((ls, k) => {
-          g.strokeRect(M + k * cw, y, cw, rh);
-          if (head){ g.fillStyle = '#eef1f8'; g.fillRect(M + k * cw + 1, y + 1, cw - 2, rh - 2); g.fillStyle = '#111'; }
-          ls.forEach((l, q) => g.fillText(l, M + k * cw + 11, y + 9 + q * 38));
+          if (head){ g.fillStyle = '#eef1f8'; g.fillRect(MX + k * cw, y, cw, rh); g.fillStyle = '#111'; }
+          g.strokeRect(MX + k * cw, y, cw, rh);
+          ls.forEach((l, q) => g.fillText(l, MX + k * cw + 11, y + 9 + q * 34));
         });
         y += rh;
+      };
+      const altezza = (cells, head) => Math.max(...Array.from({ length: n }, (_, k) => wrapT(cells[k] || '', head ? fb : f, cw - 22).length)) * 34 + 18;
+      if (y > MT) y += 6;
+      righe.forEach((cells, ri) => {
+        const head = intest && ri === 0, rh = altezza(cells, head);
+        if (!spazio(rh + (ri === 0 ? altezza(righe[Math.min(1, righe.length - 1)], false) : 0))){
+          nuova(); if (intest && ri > 0) disegna(righe[0], true);
+        }
+        disegna(cells, head);
       });
-      y += 14; continue;
+      y += 16; continue;
     }
-    const f = '30px ' + F, ls = wrapT(r, f, IW); g.font = f; g.textAlign = 'left';
-    ls.forEach(l => { serve(42); g.fillText(l, M, y); y += 42; }); i++;
+    const ls = wrapT(r, FONT, IW); paragrafo(ls, FONT, MX, IW, LH, true); i++;
+  }
+  if (pagine.length > 1){
+    pagine.forEach((pc, k) => { const gg = pc.getContext('2d'); gg.font = '20px ' + F; gg.fillStyle = '#777'; gg.textAlign = 'center'; gg.textBaseline = 'top'; gg.fillText('Pagina ' + (k + 1) + ' di ' + pagine.length, W / 2, H - 78); });
   }
   return pagine;
 }
